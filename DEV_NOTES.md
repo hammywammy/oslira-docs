@@ -1,0 +1,21 @@
+🔴 
+
+🟠
+
+🟡 
+
+🟢
+
+🔵
+
+🟣
+
+🟤
+
+⚫
+
+⚪
+
+🟤
+
+💡FUTURE IMPLEMENTATION
