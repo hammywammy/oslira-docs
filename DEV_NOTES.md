@@ -1,14 +1,12 @@
 🔴 GLOABAL ISSUES #GLOBAL
 -slow script initialization either leading to things not working or displaying or displaying with proper styling until everything is loaded (migrate to dependency-readiness)
--
--
--
--
--
--
--
--
--
+-refactor front end code, modularize and cleanly and intelligently store files thorughout, build it out this time for the long run
+-refactor back end code, modularize and cleanly and intelligently store files thorughout, build it out this time for the long run
+-search through front and back end code and normalize types quick, profile, xray
+-search through fron tand back end code and remove any instances of starter plan, normalize free
+-add staging protection back to staging website
+-integrate sentry to catch all errors from frontend to backend, so that admin can have access to real issues
+-fix and confirm why r2 bucket not clearing leads after 1 day
 
 🟠 HOME ISSUES #HOME
 -when the home page has an error a red line appears under the limited offer banner
@@ -118,7 +116,7 @@ location.href = '/';
 -
 
 🟤 WORKER ISSUES #WORKER
--
+-add more info to personality tab + summary
 -
 -
 -
