@@ -1,0 +1,10 @@
+// Run full diagnostics
+diagnose()
+
+// Auto-fix issues
+fix()
+
+// Get summary object
+const summary = await diagnose()
+console.log(summary)
+// → { healthy: true, passed: 23, failed: 0, warnings: 1, ... }
