@@ -17,6 +17,7 @@
 -fix all hrefs to use new system
 -create all devconsole files and get detailed with every nook and cranny for testing
 -build out all .yml files
+-move all css from all files to src/components, whether thats splitting it up into multiple files or whatever
 
 🟠 HOME ISSUES #HOME
 -when the home page has an error a red line appears under the limited offer banner
