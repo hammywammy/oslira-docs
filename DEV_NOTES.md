@@ -13,10 +13,15 @@
 -add tutorial and users tutorial_completed 
 -add favicon to every page
 -rework all footer pages css
+-change sidebar to use integrations not automation
+-fix all hrefs to use new system
+-create all devconsole files and get detailed with every nook and cranny for testing
+-build out all .yml files
 
 🟠 HOME ISSUES #HOME
 -when the home page has an error a red line appears under the limited offer banner
--home page needs to use dependency readiness or something to make it stop loading with no css and other things
+-home page needs to use real anonymous analysis, put homehandlers in registry and integrate
+-analysis should show the same modal as dashboard
 
 
 🟡 AUTH ISSUES #AUTH
