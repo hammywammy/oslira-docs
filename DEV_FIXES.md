@@ -75,6 +75,7 @@ location.href = '/';
 
 -add badges, integrate with saved lists card (change name and func), pull from business niche or whatever apify field, or have ai generate (visually appealing)
 -need one more filter in between all platforms and recent, sort by analysis type
+-analysis queue should be hidden unless something is in it
 
 🟣 SETTINGS PAGE ISSUES #SETTINGS
 -implement
