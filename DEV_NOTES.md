@@ -19,6 +19,17 @@
 -build out all .yml files
 -move all css from all files to src/components, whether thats splitting it up into multiple files or whatever
 
+*Do These 4 Things (22 hours total)
+
+Vite Build (8 hrs) - 90% faster load
+API Versioning (2 hrs) - Never break production
+Schema Validation (4 hrs) - Catch API bugs
+Cache Invalidation (3 hrs) - No stale data
+Sentry Config (1 hr) - Better error tracking
+Rate Limiter Client (4 hrs) - Prevent abuse
+
+Result: Production bulletproof in 3 weeks
+
 🟠 HOME ISSUES #HOME
 -when the home page has an error a red line appears under the limited offer banner
 -home page needs to use real anonymous analysis, put homehandlers in registry and integrate
