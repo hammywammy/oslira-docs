@@ -102,7 +102,6 @@ oslira-v1/
 │   │   │
 │   │   ├── dashboard/
 │   │   │   ├── index.ts              # Public API
-│   │   │   ├── Dashboard.tsx         # Main page component
 │   │   │   ├── components/
 │   │   │   │   ├── StatsCard.tsx
 │   │   │   │   ├── RecentLeads.tsx
@@ -115,7 +114,6 @@ oslira-v1/
 │   │   │
 │   │   ├── leads/
 │   │   │   ├── index.ts
-│   │   │   ├── LeadsPage.tsx
 │   │   │   ├── components/
 │   │   │   │   ├── LeadsTable.tsx
 │   │   │   │   ├── LeadCard.tsx
@@ -134,7 +132,6 @@ oslira-v1/
 │   │   │
 │   │   ├── analytics/
 │   │   │   ├── index.ts
-│   │   │   ├── AnalyticsPage.tsx
 │   │   │   ├── components/
 │   │   │   │   ├── EngagementChart.tsx
 │   │   │   │   └── ConversionFunnel.tsx
@@ -153,11 +150,22 @@ oslira-v1/
 │   │   │
 │   │   └── auth/
 │   │       ├── index.ts
-│   │       ├── LoginPage.tsx
-│   │       ├── SignupPage.tsx
-│   │       └── components/
-│   │           ├── LoginForm.tsx
-│   │           └── SignupForm.tsx
+│   │       ├── components/
+│   │       │   ├── LoginForm.tsx
+│   │       │   └── SignupForm.tsx
+│   │       └── types.ts
+│   │
+│   ├── pages/                        # ⚠️ ROUTE ENTRY POINTS (1 file per route)
+│   │   ├── DashboardPage.tsx         # Route: /dashboard
+│   │   ├── LeadsPage.tsx             # Route: /leads
+│   │   ├── AnalyticsPage.tsx         # Route: /analytics
+│   │   ├── CampaignsPage.tsx         # Route: /campaigns
+│   │   ├── MessagesPage.tsx          # Route: /messages
+│   │   ├── IntegrationsPage.tsx      # Route: /integrations
+│   │   ├── SettingsPage.tsx          # Route: /settings
+│   │   ├── LoginPage.tsx             # Route: /auth/login
+│   │   ├── SignupPage.tsx            # Route: /auth/signup
+│   │   └── NotFoundPage.tsx          # Route: /404
 │   │
 │   ├── shared/                       # Shared UI components
 │   │   ├── ui/                       # Base components (Radix wrappers)
