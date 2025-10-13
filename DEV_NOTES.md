@@ -60,7 +60,10 @@ location.href = '/';
 -get little chevron and x on analysis queue to work 
 -fix percentage flow
 
+-one top stat card could be promote x lead to main table or something from the lead research page.
+
 -add badges, integrate with saved lists card (change name and func), pull from business niche or whatever apify field, or have ai generate (visually appealing)
+-need one more filter in between all platforms and recent, sort by analysis type
 
 🟣 SETTINGS PAGE ISSUES #SETTINGS
 -implement
