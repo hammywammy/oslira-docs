@@ -18,6 +18,7 @@
 -create all devconsole files and get detailed with every nook and cranny for testing
 -build out all .yml files
 -move all css from all files to src/components, whether thats splitting it up into multiple files or whatever
+-fiind a way to use proper md spacing and stuff, maybe other colors as well
 
 *Do These 4 Things (22 hours total)
 
