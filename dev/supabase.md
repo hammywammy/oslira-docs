@@ -1,771 +1,852 @@
+# 📘 OSLIRA DATABASE V2 - MASTER PLAN
 
-
-**📦 OSLIRA DATABASE V2 - COMPLETE IMPLEMENTATION GUIDE**
-
-# 🔧 PHASE 0: CRITICAL FIXES & DECISIONS
-
-**Add this section to the FRONT of your database v2 document**
+**Status:** Production-Ready Blueprint  
+**Purpose:** Complete database architecture specification (plan only, not implementation)  
+**Last Updated:** 2025-01-XX
 
 ---
 
-## **📋 QUICK SUMMARY**
+## 🎯 EXECUTIVE SUMMARY
 
-This Phase 0 patch resolves **4 blocking issues** and **6 architectural decisions** that must be finalized before table creation.
+This document defines the complete PostgreSQL database schema for Oslira, a B2B SaaS platform for Instagram lead analysis.
 
-### **What Changed:**
-1. ✅ Fixed Instagram username uniqueness (multi-business support)
-2. ✅ Added credit deduction function (prevents race conditions)
-3. ✅ Added account-level suspension
-4. ✅ Added analysis requester tracking
-5. ✅ Added slug generation function
-6. ✅ Added minimal invoice tracking table
-7. ✅ Defined signup flow pattern
-8. ✅ Removed redundant `is_active` flags
-9. ✅ Updated constraints for correct behavior
-10. ✅ Added essential RLS protection
+### **What This Document Contains:**
+- ✅ **15 tables** with complete column specifications
+- ✅ **All constraints** (foreign keys, unique, check)
+- ✅ **All indexes** for performance
+- ✅ **Row-level security** policies
+- ✅ **Business logic functions** (credit deduction, slug generation)
+- ✅ **Triggers** for automation
+- ✅ **Pricing structure** (4 plans: Free, Pro, Agency, Enterprise)
 
----
+### **What This Document Does NOT Contain:**
+- ❌ Executable SQL (that comes after approval)
+- ❌ Cloudflare Worker code
+- ❌ Frontend implementation details
 
-## **🎯 ARCHITECTURAL DECISIONS LOCKED**
-
-### **1. Account Creation Flow**
-**Pattern:** Cloudflare Worker Handler (explicit, not database trigger)
-
-**Why:** 
-- Stripe API integration happens during signup
-- Explicit control for debugging
-- Can customize per signup source (referral codes, promo campaigns)
-
-**Implementation:** See "Signup Flow" section below
+### **Tech Stack:**
+- **Database:** Supabase (PostgreSQL 15)
+- **Backend:** Cloudflare Workers (Hono framework)
+- **Payments:** Stripe
+- **AI Providers:** OpenAI, Anthropic, Apify
+- **Secrets:** AWS Secrets Manager (ALL secrets stored here, not Cloudflare env vars)
 
 ---
 
-### **2. Account Naming & Slugs**
-```javascript
-// On signup:
-const fullName = user.user_metadata.full_name || user.email.split('@')[0];
-const accountName = `${fullName}'s Account`;  // "Hamza's Account"
-const slug = generateSlug(fullName);          // "hamza" or "hamzawil"
+# 📋 PART 1: PRICING & PLANS
 
-// URL structure: app.oslira.com/accounts/hamzawil/dashboard
-```
+## **FINAL PRICING STRUCTURE** (Overwrites All Previous Mentions)
 
-**Slug generation:** See function in "Essential Functions" section
+| Plan ID | Name | Monthly Price | Credits/Month | Max Businesses | Stripe Product Needed? |
+|---------|------|---------------|---------------|----------------|------------------------|
+| `free` | Free Plan | $0 | 25 | 1 | No (customer only) |
+| `pro` | Pro Plan | $30 | 100 | 3 | Yes |
+| `agency` | Agency Plan | $80 | 300 | 10 | Yes |
+| `enterprise` | Enterprise Plan | $300 | 1500 | Unlimited | Yes |
 
----
+### **Credit Consumption:**
+- **Light Analysis:** 1 credit
+- **Deep Analysis:** 2 credits
 
-### **3. Stripe Integration for ALL Plans**
-```javascript
-// FREE plans create Stripe customer (no subscription object)
-const customer = await stripe.customers.create({ email, name });
+### **Effective Analysis Capacity:**
+- **Free:** 12 deep OR 25 light analyses/month
+- **Pro:** 50 deep OR 100 light analyses/month
+- **Agency:** 150 deep OR 300 light analyses/month
+- **Enterprise:** 750 deep OR 1500 light analyses/month
 
-await db.insert('subscriptions', {
-  plan_type: 'free',
-  stripe_customer_id: customer.id,        // ✅ Always present
-  stripe_subscription_id: null,           // ✅ NULL for free
-  status: 'active',                       // ✅ Immediately active
-  current_period_start: NOW(),
-  current_period_end: NOW() + 30 days     // ✅ Free has periods too
-});
-```
+### **Credit Rollover:**
+- ✅ Credits **accumulate** (do not reset monthly)
+- ✅ Industry standard behavior (AWS, Stripe, etc.)
+- ⚠️ Can add cap later (e.g., max 3 months worth) if needed
 
-**Monthly cron grants credits to ALL plans** (free + paid, same logic)
-
----
-
-### **4. Multi-Business Lead Separation**
-```sql
--- Each business has independent CRM
--- Same Instagram account can be analyzed for different businesses
-UNIQUE (account_id, business_profile_id, instagram_username)
-
--- Example:
--- Agency analyzes @nike for "Campaign A" → Lead #1
--- Agency analyzes @nike for "Campaign B" → Lead #2 ✅ ALLOWED
+### **Plans Table Features JSON:**
+```json
+{
+  "max_businesses": 1  // Only this field
+}
+// NO "max_analyses_per_month" (redundant with credits_per_month)
 ```
 
 ---
 
-### **5. Re-Analysis Always Allowed**
-```sql
--- No constraint on analyses.lead_id
--- Can create multiple analyses for same lead
+# 📋 PART 2: COMPLETE TABLE STRUCTURES
 
--- Use case: Track influencer growth over time
--- Week 1: Score 75
--- Week 4: Score 82
+## **Database Layers Overview:**
+
 ```
+LAYER 1: Identity & Auth (1 table)
+  └── users
+
+LAYER 2: Billing Foundation (10 tables)
+  ├── accounts
+  ├── account_members
+  ├── plans
+  ├── subscriptions
+  ├── credit_ledger
+  ├── credit_balances (materialized view)
+  ├── account_usage_summary
+  ├── platform_metrics_daily
+  ├── stripe_invoices
+  └── webhook_events
+
+LAYER 3: Business Logic (4 tables)
+  ├── business_profiles
+  ├── leads
+  ├── analyses
+  └── ai_usage_logs
+```
+
+**Total: 15 tables**
 
 ---
 
-### **6. Soft Deletes Only (No is_active)**
-```sql
--- REMOVED from schema:
--- business_profiles.is_active boolean
+## LAYER 1: IDENTITY & AUTHENTICATION
 
--- ONLY USE:
--- business_profiles.deleted_at timestamptz
+### **Table: users**
+**Purpose:** Core user identity (extends Supabase auth.users)
 
--- Query pattern:
-WHERE deleted_at IS NULL  -- Active records
-```
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | uuid | PRIMARY KEY, FK → auth.users(id) ON DELETE CASCADE | Supabase auth user ID |
+| email | text | UNIQUE, NOT NULL | User email address |
+| full_name | text | - | Display name (e.g., "Hamza Williams") |
+| signature_name | text | - | Name used in AI-generated messages |
+| avatar_url | text | - | Profile picture URL |
+| onboarding_completed | boolean | DEFAULT false | Has user completed onboarding? |
+| is_admin | boolean | DEFAULT false | Global admin (bypasses ALL RLS) |
+| is_suspended | boolean | DEFAULT false | User suspended by admin |
+| suspended_at | timestamptz | - | When suspension occurred |
+| suspended_reason | text | - | Admin notes on why suspended |
+| last_seen_at | timestamptz | - | Last activity timestamp |
+| created_at | timestamptz | DEFAULT NOW() | Account creation time |
+| updated_at | timestamptz | DEFAULT NOW() | Last update time (auto-trigger) |
 
----
+**Indexes:**
+- `idx_users_email` on `email`
+- `idx_users_admin` on `is_admin` WHERE `is_admin = true`
 
-### **7. Team Permissions (Deferred to Phase 2)**
-```sql
--- For now: All account_members have equal access
--- RLS: account_id IN (SELECT auth.user_account_ids())
--- No role-based restrictions yet
-```
-
----
-
-### **8. Admin Global Bypass**
-```sql
--- users.is_admin = true bypasses ALL RLS policies
--- Use for support, debugging, admin dashboard
-```
+**RLS:** No RLS (auth.users table handles this)
 
 ---
 
-### **9. Invoice Tracking**
-**Decision:** Keep minimal 6-column table
+## LAYER 2: BILLING FOUNDATION
 
-**Why:** 
-- Support tickets resolve faster (instant query vs Stripe API call)
-- Revenue dashboard works without Stripe exports
+### **Table: accounts**
+**Purpose:** The billable entity (NOT users). One account = one Stripe customer.
+
+**Key Concept:** Users can belong to multiple accounts, but credits belong to ACCOUNTS.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | uuid | PRIMARY KEY, DEFAULT gen_random_uuid() | Account unique identifier |
+| owner_id | uuid | NOT NULL, FK → users(id) ON DELETE RESTRICT | Account owner (can delete account) |
+| name | text | NOT NULL | Display name (e.g., "Hamza's Account") |
+| slug | text | UNIQUE | URL-safe identifier (e.g., "hamza-williams") |
+| is_suspended | boolean | DEFAULT false | Account suspended by admin |
+| suspended_at | timestamptz | - | When suspension occurred |
+| suspended_reason | text | - | Admin notes |
+| suspended_by | uuid | FK → users(id) | Which admin suspended |
+| deleted_at | timestamptz | - | Soft delete timestamp |
+| created_at | timestamptz | DEFAULT NOW() | - |
+| updated_at | timestamptz | DEFAULT NOW() | Auto-updated via trigger |
+
+**Indexes:**
+- `idx_accounts_owner` on `owner_id`
+- `idx_accounts_slug` on `slug` WHERE `deleted_at IS NULL`
+- `idx_accounts_active` on `id` WHERE `deleted_at IS NULL AND is_suspended = false`
+
+**Constraints:**
+- `slug` must be unique
+- `owner_id` cannot be deleted (RESTRICT)
+
+**RLS:** Users see only accounts they belong to (via account_members)
+
+**Naming Pattern:**
+- On signup: `{full_name}'s Account` (e.g., "Hamza Williams's Account")
+- Slug generation: Function `generate_slug(full_name)` → "hamza-williams"
+
+---
+
+### **Table: account_members**
+**Purpose:** Junction table for multi-user accounts (team collaboration)
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | uuid | PRIMARY KEY | - |
+| account_id | uuid | NOT NULL, FK → accounts(id) ON DELETE CASCADE | Which account |
+| user_id | uuid | NOT NULL, FK → users(id) ON DELETE CASCADE | Which user |
+| role | text | DEFAULT 'member', CHECK | User's role in account |
+| invited_by | uuid | FK → users(id) | Who invited this user |
+| joined_at | timestamptz | DEFAULT NOW() | When they joined |
+| created_at | timestamptz | DEFAULT NOW() | - |
+
+**Constraints:**
+- `UNIQUE (account_id, user_id)` - no duplicate memberships
+- `CHECK (role IN ('owner', 'admin', 'member', 'viewer'))` - valid roles only
+
+**Role Definitions:**
+- **owner:** Full control, can delete account, manage all members
+- **admin:** Can manage members/viewers (but not other admins)
+- **member:** Can spend credits, create leads/analyses
+- **viewer:** Read-only access
+
+**Indexes:**
+- `idx_account_members_user` on `user_id, account_id`
+- `idx_account_members_account` on `account_id`
+
+**RLS:** 
+- Phase 1: All members have equal access (role enforcement deferred)
+- Phase 2: Role-based permissions (owner/admin can manage, member can execute, viewer read-only)
+
+---
+
+### **Table: plans**
+**Purpose:** Define available subscription tiers (data-driven, not hardcoded)
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | text | PRIMARY KEY | Plan identifier ('free', 'pro', 'agency', 'enterprise') |
+| name | text | NOT NULL | Display name ("Free Plan", "Pro Plan") |
+| credits_per_month | integer | NOT NULL, CHECK >= 0 | Monthly credit grant (25, 100, 300, 1500) |
+| price_cents | integer | NOT NULL, CHECK >= 0 | Monthly price in cents (0, 3000, 8000, 30000) |
+| stripe_price_id | text | - | Stripe Price ID (NULL for free, filled after Stripe setup) |
+| is_active | boolean | DEFAULT true | Can new users sign up for this plan? |
+| features | jsonb | - | `{"max_businesses": 1}` |
+| created_at | timestamptz | DEFAULT NOW() | - |
+
+**Preseed Data:**
+```
+free     | Free Plan       | 25   | 0     | NULL | {"max_businesses": 1}
+pro      | Pro Plan        | 100  | 3000  | NULL | {"max_businesses": 3}
+agency   | Agency Plan     | 300  | 8000  | NULL | {"max_businesses": 10}
+enterprise | Enterprise  | 1500 | 30000 | NULL | {"max_businesses": null}
+```
+
+**Notes:**
+- `stripe_price_id` filled later (after creating products in Stripe dashboard)
+- `features.max_businesses` = null means unlimited
+- Plans are EDITABLE (can change credits/price anytime)
+- Changing `credits_per_month` affects NEXT month's renewal
+- Changing `price_cents` requires NEW Stripe price (old subscriptions unchanged)
+
+**RLS:** Public read access (for pricing page)
+
+---
+
+### **Table: subscriptions**
+**Purpose:** Track subscription history (append-only, never UPDATE plan_type)
+
+**CRITICAL RULE:** NEVER mutate existing subscriptions. Always INSERT new row when upgrading/downgrading.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | uuid | PRIMARY KEY | - |
+| account_id | uuid | NOT NULL, FK → accounts(id) ON DELETE RESTRICT | Which account |
+| plan_type | text | NOT NULL, FK → plans(id) | Plan ID ('free', 'pro', etc.) |
+| price_cents | integer | NOT NULL, CHECK >= 0 | Price at time of subscription |
+| stripe_customer_id | text | - | Stripe customer ID ("cus_...") |
+| stripe_subscription_id | text | - | Stripe subscription ID ("sub_...") - NULL for free |
+| stripe_price_id | text | - | Stripe price ID used |
+| status | text | DEFAULT 'active', CHECK | Subscription state |
+| current_period_start | timestamptz | NOT NULL | Billing period start |
+| current_period_end | timestamptz | NOT NULL | Billing period end |
+| canceled_at | timestamptz | - | When user canceled (ends at period_end) |
+| created_at | timestamptz | DEFAULT NOW() | - |
+
+**Valid Statuses:**
+- `active` - Currently active, credits granted monthly
+- `canceled` - Canceled, still active until period_end
+- `past_due` - Payment failed (Stripe webhook)
+- `paused` - Admin paused (no credit grants)
+- `pending_stripe_confirmation` - Just signed up, waiting for Stripe webhook
+
+**Constraints:**
+- Only ONE active subscription per account: `UNIQUE INDEX idx_one_active_subscription ON subscriptions(account_id) WHERE status = 'active'`
+- `CHECK (status IN (...))`
+
+**Indexes:**
+- `idx_subscriptions_active` on `account_id, status` WHERE `status = 'active'`
+- `idx_subscriptions_customer` on `stripe_customer_id`
+
+**Upgrade/Downgrade Flow:**
+```
+User upgrades from Free to Pro:
+1. UPDATE old_sub SET status='canceled', canceled_at=NOW() WHERE account_id=X AND status='active'
+2. INSERT new_sub (account_id=X, plan_type='pro', status='active', ...)
+Result: Full history preserved (free → pro audit trail)
+```
+
+**Free Plan Subscription:**
+- Has `stripe_customer_id` (Stripe customer created)
+- Has NO `stripe_subscription_id` (no Stripe subscription object)
+- Status is immediately `active` (no payment needed)
+- Still has periods (current_period_start/end for monthly renewal)
+
+**RLS:** Users can read their own subscriptions (read-only)
+
+---
+
+### **Table: credit_ledger**
+**Purpose:** Append-only financial audit log (NEVER UPDATE, only INSERT)
+
+**This is the source of truth for all credit movements.**
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | uuid | PRIMARY KEY | - |
+| account_id | uuid | NOT NULL, FK → accounts(id) ON DELETE RESTRICT | Which account |
+| amount | integer | NOT NULL | Credits added/removed (+100, -2) |
+| balance_after | integer | NOT NULL, CHECK >= 0 | Balance after this transaction |
+| transaction_type | text | NOT NULL, CHECK | Type of transaction |
+| reference_type | text | - | What caused this? ('analysis', 'subscription', etc.) |
+| reference_id | uuid | - | ID of the related record (analysis_id, subscription_id) |
+| description | text | - | Human-readable description |
+| metadata | jsonb | - | Additional context (analysis details, etc.) |
+| created_by | uuid | FK → users(id) | Who triggered (NULL for system) |
+| created_at | timestamptz | DEFAULT NOW() | Transaction timestamp |
+
+**Valid Transaction Types:**
+- `subscription_renewal` - Monthly credit grant
+- `analysis` - Credit deduction for analysis
+- `refund` - Manual refund by admin
+- `admin_grant` - Admin manually added credits
+- `chargeback` - Stripe chargeback (negative)
+- `signup_bonus` - Welcome credits (25 free on signup)
+
+**Constraints:**
+- `CHECK (balance_after >= 0)` - Cannot overdraft
+- `CHECK (transaction_type IN (...))`
+
+**Indexes:**
+- `idx_credit_ledger_account` on `account_id, created_at DESC`
+- `idx_credit_ledger_type` on `transaction_type, created_at DESC`
+
+**Example Rows:**
+```
+| account_id | amount | balance_after | type                | description              |
+|------------|--------|---------------|---------------------|--------------------------|
+| acc_123    | +25    | 25            | signup_bonus        | Welcome to Oslira!       |
+| acc_123    | -2     | 23            | analysis            | Deep analysis of @nike   |
+| acc_123    | +100   | 123           | subscription_renewal| Monthly Pro renewal      |
+```
+
+**Retention:** Forever (legal/accounting requirement)
+
+**RLS:** Users can read their own ledger (read-only, no inserts allowed)
+
+---
+
+### **Table: credit_balances**
+**Purpose:** Materialized view of current credit balance (performance optimization)
+
+**Why Needed:** Querying `SUM(amount) FROM credit_ledger` is slow at scale. This table caches the result.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| account_id | uuid | PRIMARY KEY, FK → accounts(id) ON DELETE CASCADE | Which account |
+| current_balance | integer | NOT NULL, DEFAULT 0, CHECK >= 0 | Current credits |
+| last_transaction_at | timestamptz | - | Last credit_ledger entry |
+| created_at | timestamptz | DEFAULT NOW() | - |
+| updated_at | timestamptz | DEFAULT NOW() | Auto-updated via trigger |
+
+**How It Works:**
+1. User calls `deduct_credits()` function
+2. Function inserts into `credit_ledger`
+3. Trigger `credit_ledger_update_balance` fires
+4. Trigger updates `credit_balances.current_balance`
+5. Dashboard queries `credit_balances` (instant!)
+
+**Indexes:**
+- `idx_credit_balances_account` on `account_id`
+
+**RLS:** Users can read their own balance (read-only)
+
+---
+
+### **Table: account_usage_summary**
+**Purpose:** Monthly rollup of account activity (performance optimization for dashboards)
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | uuid | PRIMARY KEY | - |
+| account_id | uuid | NOT NULL, FK → accounts(id) ON DELETE RESTRICT | Which account |
+| period_start | date | NOT NULL | Month start (2025-01-01) |
+| period_end | date | NOT NULL | Month end (2025-01-31) |
+| credits_used | integer | DEFAULT 0 | Total credits spent this month |
+| light_analyses_count | integer | DEFAULT 0 | Number of light analyses |
+| deep_analyses_count | integer | DEFAULT 0 | Number of deep analyses |
+| total_analyses_count | integer | DEFAULT 0 | light + deep |
+| total_cost_cents | integer | DEFAULT 0 | Actual AI API costs (for margin calculation) |
+| is_finalized | boolean | DEFAULT false | Month ended? (frozen on 1st of next month) |
+| created_at | timestamptz | DEFAULT NOW() | - |
+| updated_at | timestamptz | DEFAULT NOW() | Auto-updated during month |
+
+**Constraints:**
+- `UNIQUE (account_id, period_start)` - one summary per account per month
+
+**Indexes:**
+- `idx_account_usage` on `account_id, period_start DESC`
+
+**Update Pattern:**
+- **During month:** Updated real-time (on each analysis completion)
+- **End of month:** Cron sets `is_finalized = true` (freezes data)
+- **Next month:** New row created
+
+**RLS:** Users can read their own summaries (read-only)
+
+---
+
+### **Table: platform_metrics_daily**
+**Purpose:** Daily rollup of platform-wide statistics (admin dashboard, no RLS)
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | uuid | PRIMARY KEY | - |
+| metric_date | date | NOT NULL, UNIQUE | Date of metrics (2025-01-15) |
+| total_analyses_count | integer | DEFAULT 0 | Total analyses run |
+| light_analyses_count | integer | DEFAULT 0 | Light analyses |
+| deep_analyses_count | integer | DEFAULT 0 | Deep analyses |
+| active_accounts_count | integer | DEFAULT 0 | Accounts with activity today |
+| new_accounts_count | integer | DEFAULT 0 | Signups today |
+| openai_calls_count | integer | DEFAULT 0 | OpenAI API calls |
+| anthropic_calls_count | integer | DEFAULT 0 | Anthropic API calls |
+| apify_calls_count | integer | DEFAULT 0 | Apify scraper calls |
+| openai_cost_cents | integer | DEFAULT 0 | OpenAI costs |
+| anthropic_cost_cents | integer | DEFAULT 0 | Anthropic costs |
+| apify_cost_cents | integer | DEFAULT 0 | Apify costs |
+| total_cost_cents | integer | DEFAULT 0 | Total AI costs |
+| openai_avg_duration_ms | integer | DEFAULT 0 | Avg response time |
+| anthropic_avg_duration_ms | integer | DEFAULT 0 | Avg response time |
+| apify_avg_duration_ms | integer | DEFAULT 0 | Avg scrape time |
+| openai_error_count | integer | DEFAULT 0 | Failed calls |
+| anthropic_error_count | integer | DEFAULT 0 | Failed calls |
+| apify_error_count | integer | DEFAULT 0 | Failed scrapes |
+| credits_purchased_count | integer | DEFAULT 0 | Total credits granted (renewals + purchases) |
+| revenue_cents | integer | DEFAULT 0 | Stripe payments received |
+| profit_margin_cents | integer | DEFAULT 0 | Revenue - AI costs |
+| daily_active_users | integer | DEFAULT 0 | Unique users active |
+| avg_lead_score | numeric | - | Average analysis score |
+| high_quality_leads_count | integer | DEFAULT 0 | Leads with score > 80 |
+| mrr_cents | integer | DEFAULT 0 | Monthly Recurring Revenue |
+| arr_cents | integer | DEFAULT 0 | Annual Recurring Revenue |
+| customer_count | integer | DEFAULT 0 | Total paying customers |
+| created_at | timestamptz | DEFAULT NOW() | - |
+| updated_at | timestamptz | DEFAULT NOW() | - |
+
+**Indexes:**
+- `idx_platform_metrics_date` on `metric_date DESC`
+
+**Retention:** Forever (historical analytics)
+
+**RLS:** No RLS (service role only, admins query via backend API)
+
+---
+
+### **Table: stripe_invoices**
+**Purpose:** Minimal invoice tracking (support tickets, revenue dashboard)
+
+**Why Needed:**
+- Support can quickly see payment history without Stripe API call
+- Revenue dashboard doesn't need Stripe exports
 - Webhook durability (record persists even if processing fails)
 
----
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | uuid | PRIMARY KEY | - |
+| account_id | uuid | NOT NULL, FK → accounts(id) ON DELETE RESTRICT | Which account |
+| stripe_invoice_id | text | UNIQUE, NOT NULL | Stripe invoice ID ("in_...") |
+| stripe_subscription_id | text | - | Related subscription |
+| amount_cents | integer | NOT NULL | Invoice amount |
+| currency | text | DEFAULT 'usd' | Currency code |
+| status | text | NOT NULL, CHECK | Invoice status |
+| paid_at | timestamptz | - | When payment succeeded |
+| failed_at | timestamptz | - | When payment failed |
+| failure_reason | text | - | Why payment failed |
+| created_at | timestamptz | DEFAULT NOW() | - |
 
-## **🔧 SCHEMA CORRECTIONS**
+**Valid Statuses:**
+- `paid` - Successfully paid
+- `open` - Awaiting payment
+- `void` - Canceled/voided
+- `uncollectible` - Payment failed, given up
 
-### **CORRECTION #1: Instagram Username Constraint**
+**Constraints:**
+- `CHECK (status IN ('paid', 'open', 'void', 'uncollectible'))`
 
-**FIND THIS in your doc (around line 750):**
-```sql
-leads (
-  instagram_username text UNIQUE NOT NULL,  -- ❌ WRONG
-```
+**Indexes:**
+- `idx_invoices_account` on `account_id, created_at DESC`
+- `idx_invoices_status` on `status, paid_at DESC`
+- `idx_invoices_stripe_id` on `stripe_invoice_id`
 
-**REPLACE WITH:**
-```sql
-leads (
-  instagram_username text NOT NULL,  -- Removed UNIQUE
-```
+**Populated By:** Stripe webhooks (`invoice.paid`, `invoice.payment_failed`)
 
-**ADD THIS constraint at table end:**
-```sql
--- Allow same Instagram account for different businesses
-CONSTRAINT unique_username_per_business 
-  UNIQUE (account_id, business_profile_id, instagram_username)
-```
-
-**ADD THIS index (for global lookups):**
-```sql
-CREATE INDEX idx_leads_username_lookup 
-ON leads(instagram_username) 
-WHERE deleted_at IS NULL;
-```
-
----
-
-### **CORRECTION #2: Add Account Suspension**
-
-**FIND THIS in your doc (accounts table, around line 200):**
-```sql
-accounts (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  owner_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-  name text NOT NULL,
-  slug text UNIQUE,
-  deleted_at timestamptz,
-  created_at timestamptz DEFAULT NOW(),
-  updated_at timestamptz DEFAULT NOW()
-)
-```
-
-**ADD THESE columns before created_at:**
-```sql
-  is_suspended boolean DEFAULT false,
-  suspended_at timestamptz,
-  suspended_reason text,
-  suspended_by uuid REFERENCES users(id),
-```
+**RLS:** Users can read their own invoices (read-only)
 
 ---
 
-### **CORRECTION #3: Add Analysis Requester**
+### **Table: webhook_events**
+**Purpose:** Idempotency tracking for Stripe webhooks (prevent duplicate processing)
 
-**FIND THIS in your doc (analyses table, around line 800):**
-```sql
-analyses (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  lead_id uuid NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
-  account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-  business_profile_id uuid REFERENCES business_profiles(id) ON DELETE SET NULL,
+**Why Critical:** Stripe retries webhooks on timeout. Without deduplication, user gets double credits.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| stripe_event_id | text | PRIMARY KEY | Stripe event ID ("evt_...") |
+| event_type | text | NOT NULL | Event type ("invoice.paid") |
+| account_id | uuid | FK → accounts(id) | Related account (if identifiable) |
+| processed_at | timestamptz | DEFAULT NOW() | When we processed it |
+| payload | jsonb | - | Full Stripe event JSON (debugging) |
+
+**Webhook Handler Pattern:**
+```
+1. Webhook arrives with event_id = "evt_123"
+2. Check: SELECT 1 FROM webhook_events WHERE stripe_event_id = 'evt_123'
+3. If exists: return 200 OK (already processed)
+4. Process event (grant credits, update subscription, etc.)
+5. INSERT INTO webhook_events (stripe_event_id, ...)
+6. Return 200 OK
 ```
 
-**ADD THIS column after business_profile_id:**
-```sql
-  requested_by uuid REFERENCES users(id),
-```
+**Indexes:**
+- `idx_webhook_stripe_id` on `stripe_event_id` (UNIQUE, critical for dedup)
+- `idx_webhook_type` on `event_type, processed_at DESC`
 
-**ADD THIS index later in doc:**
-```sql
-CREATE INDEX idx_analyses_requester 
-ON analyses(requested_by, created_at DESC);
-```
+**Retention:** Forever (audit trail)
+
+**RLS:** No RLS (service role only)
 
 ---
 
-### **CORRECTION #4: Remove is_active from business_profiles**
+## LAYER 3: BUSINESS LOGIC
 
-**FIND THIS in your doc (business_profiles table, around line 700):**
-```sql
-  is_active boolean DEFAULT true,  -- ❌ DELETE THIS LINE
-  deleted_at timestamptz,
-```
+### **Table: business_profiles**
+**Purpose:** User's business context (used for AI analysis prompts)
 
-**REMOVE the is_active line entirely**
+**Key Design:** Minimal direct columns, most data in JSONB (flexible, rarely edited)
 
----
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | uuid | PRIMARY KEY | - |
+| account_id | uuid | NOT NULL, FK → accounts(id) ON DELETE RESTRICT | Which account owns this |
+| business_name | text | NOT NULL | Display name (e.g., "Oslira Marketing") |
+| website | text | - | Business website URL |
+| business_one_liner | text | - | Short tagline (dashboard greeting) |
+| business_context_pack | jsonb | - | AI-generated context (niche, audience, value prop, etc.) |
+| context_version | text | DEFAULT 'v1.0' | AI prompt version used |
+| context_generated_at | timestamptz | - | When AI generated this |
+| context_manually_edited | boolean | DEFAULT false | Did user edit manually? |
+| context_updated_at | timestamptz | - | Last manual edit |
+| deleted_at | timestamptz | - | Soft delete timestamp |
+| created_at | timestamptz | DEFAULT NOW() | - |
+| updated_at | timestamptz | DEFAULT NOW() | Auto-updated via trigger |
 
-### **CORRECTION #5: Add Minimal Invoice Table**
-
-**ADD THIS table in "Layer 2: Billing Foundation" (after webhook_events):**
-```sql
-CREATE TABLE stripe_invoices (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-  stripe_invoice_id text UNIQUE NOT NULL,
-  amount_cents integer NOT NULL,
-  status text NOT NULL CHECK (status IN ('paid', 'open', 'void', 'uncollectible')),
-  paid_at timestamptz,
-  created_at timestamptz DEFAULT NOW()
-);
-
-CREATE INDEX idx_invoices_account ON stripe_invoices(account_id, created_at DESC);
-CREATE INDEX idx_invoices_status ON stripe_invoices(status, paid_at DESC);
-```
-
----
-
-## **🛠️ ESSENTIAL FUNCTIONS**
-
-### **FUNCTION #1: Credit Deduction (Prevents Race Conditions)**
-
-**Add this to Phase 1 in your doc:**
-
-```sql
-CREATE OR REPLACE FUNCTION deduct_credits(
-  p_account_id uuid,
-  p_amount integer,  -- Negative for deductions, positive for grants
-  p_transaction_type text,
-  p_description text,
-  p_metadata jsonb DEFAULT '{}'::jsonb
-) RETURNS uuid AS $$
-DECLARE
-  v_current_balance integer;
-  v_new_balance integer;
-  v_transaction_id uuid;
-BEGIN
-  -- Lock and get current balance atomically
-  SELECT COALESCE(current_balance, 0) INTO v_current_balance
-  FROM credit_balances
-  WHERE account_id = p_account_id
-  FOR UPDATE;  -- Prevents concurrent modifications
-  
-  -- If no balance record exists, initialize to 0
-  IF NOT FOUND THEN
-    INSERT INTO credit_balances (account_id, current_balance, last_transaction_at)
-    VALUES (p_account_id, 0, NOW());
-    v_current_balance := 0;
-  END IF;
-  
-  -- Calculate new balance
-  v_new_balance := v_current_balance + p_amount;
-  
-  -- Prevent overdraft
-  IF v_new_balance < 0 THEN
-    RAISE EXCEPTION 'Insufficient credits: % available, % required', 
-      v_current_balance, ABS(p_amount);
-  END IF;
-  
-  -- Insert transaction with calculated balance
-  INSERT INTO credit_ledger (
-    account_id, 
-    amount, 
-    balance_after, 
-    transaction_type, 
-    description, 
-    metadata,
-    created_at
-  ) VALUES (
-    p_account_id, 
-    p_amount, 
-    v_new_balance,
-    p_transaction_type, 
-    p_description, 
-    p_metadata,
-    NOW()
-  ) RETURNING id INTO v_transaction_id;
-  
-  -- Update materialized balance
-  UPDATE credit_balances
-  SET current_balance = v_new_balance,
-      last_transaction_at = NOW(),
-      updated_at = NOW()
-  WHERE account_id = p_account_id;
-  
-  RETURN v_transaction_id;
-END;
-$$ LANGUAGE plpgsql;
-```
-
-**Usage in application:**
-```javascript
-// Deduct 2 credits for analysis
-const txId = await db.rpc('deduct_credits', {
-  p_account_id: accountId,
-  p_amount: -2,  // Negative = deduction
-  p_transaction_type: 'analysis',
-  p_description: `Deep analysis of @${username}`,
-  p_metadata: { analysis_id: analysisId, lead_id: leadId }
-});
-// Throws exception if insufficient credits
-```
-
----
-
-### **FUNCTION #2: Slug Generation**
-
-**Add this to Phase 1 in your doc:**
-
-```sql
-CREATE OR REPLACE FUNCTION generate_slug(input_text text)
-RETURNS text AS $$
-DECLARE
-  base_slug text;
-  final_slug text;
-  counter integer := 0;
-BEGIN
-  -- Convert to lowercase, replace non-alphanumeric with hyphens
-  base_slug := lower(regexp_replace(input_text, '[^a-zA-Z0-9]+', '-', 'g'));
-  
-  -- Remove leading/trailing hyphens
-  base_slug := trim(both '-' from base_slug);
-  
-  -- Truncate to 50 characters
-  base_slug := substring(base_slug from 1 for 50);
-  
-  -- Ensure uniqueness
-  final_slug := base_slug;
-  
-  WHILE EXISTS (SELECT 1 FROM accounts WHERE slug = final_slug) LOOP
-    counter := counter + 1;
-    final_slug := base_slug || '-' || counter;
-  END LOOP;
-  
-  RETURN final_slug;
-END;
-$$ LANGUAGE plpgsql;
-```
-
-**Usage in application:**
-```javascript
-const slug = await db.rpc('generate_slug', { 
-  input_text: fullName 
-});
-// "Hamza Williams" → "hamza-williams"
-// If exists → "hamza-williams-2"
-```
-
----
-
-## **📝 SIGNUP FLOW IMPLEMENTATION**
-
-**Add this to your Cloudflare Worker:**
-
-```javascript
-/**
- * POST /api/auth/complete-signup
- * Called after Supabase auth.signUp() succeeds
- */
-export async function completeSignup(c) {
-  const { userId, email, fullName } = await c.req.json();
-  
-  try {
-    // 1. Create Stripe customer
-    const customer = await stripe.customers.create({
-      email,
-      name: fullName,
-      metadata: { 
-        user_id: userId,
-        source: 'oslira_signup'
-      }
-    });
-    
-    // 2. Generate unique slug
-    const slug = await db.rpc('generate_slug', { 
-      input_text: fullName 
-    });
-    
-    // 3. Create account
-    const account = await db.query(`
-      INSERT INTO accounts (owner_id, name, slug)
-      VALUES ($1, $2, $3)
-      RETURNING id
-    `, [userId, `${fullName}'s Account`, slug]);
-    
-    const accountId = account.rows[0].id;
-    
-    // 4. Add user to account_members
-    await db.query(`
-      INSERT INTO account_members (account_id, user_id, role)
-      VALUES ($1, $2, 'owner')
-    `, [accountId, userId]);
-    
-    // 5. Create free subscription
-    const periodStart = new Date();
-    const periodEnd = new Date(Date.now() + 30*24*60*60*1000); // 30 days
-    
-    await db.query(`
-      INSERT INTO subscriptions (
-        account_id, 
-        plan_type, 
-        price_cents,
-        stripe_customer_id, 
-        stripe_subscription_id,
-        status,
-        current_period_start,
-        current_period_end
-      ) VALUES ($1, 'free', 0, $2, NULL, 'active', $3, $4)
-    `, [accountId, customer.id, periodStart, periodEnd]);
-    
-    // 6. Grant 25 welcome credits
-    await db.rpc('deduct_credits', {
-      p_account_id: accountId,
-      p_amount: 25,  // Positive = grant
-      p_transaction_type: 'signup_bonus',
-      p_description: 'Welcome to Oslira!'
-    });
-    
-    return c.json({
-      success: true,
-      account: {
-        id: accountId,
-        slug,
-        credits: 25
-      },
-      stripe_customer_id: customer.id
-    });
-    
-  } catch (error) {
-    console.error('Signup failed:', error);
-    return c.json({ success: false, error: error.message }, 500);
-  }
+**Business Context Pack Structure (JSONB):**
+```json
+{
+  "niche": "B2B SaaS copywriting",
+  "target_audience": "Tech founders, marketing managers",
+  "value_proposition": "Conversion-focused copy that sells",
+  "problems_solved": ["Low conversion rates", "Generic messaging"],
+  "unique_approach": "Data-driven storytelling",
+  "ideal_client_traits": ["Fast-growing startups", "Tech-savvy"],
+  "service_offerings": ["Landing pages", "Email sequences"],
+  "tone_of_voice": "Professional yet approachable",
+  "competitors": ["Agency X", "Freelancer Y"],
+  "geographic_focus": "North America"
 }
 ```
 
-**Frontend flow:**
-```javascript
-// 1. User fills signup form
-const { data, error } = await supabase.auth.signUp({
-  email,
-  password,
-  options: {
-    data: { full_name: fullName }
-  }
-});
-
-// 2. Call backend to complete setup
-const response = await fetch('/api/auth/complete-signup', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    userId: data.user.id,
-    email: data.user.email,
-    fullName
-  })
-});
-
-// 3. Redirect to onboarding
-window.location.href = `/accounts/${response.account.slug}/onboarding`;
+**Settings UI Pattern:**
 ```
+┌─ Business Profile ────────────────┐
+│ Name: [Oslira Marketing        ]  │ ← Direct edit
+│ Website: [oslira.com           ]  │ ← Direct edit
+│ Tagline: [We write copy that sells]│ ← Direct edit
+│                                   │
+│ [Regenerate Business Context]  ← Opens onboarding form,
+│                                   recreates business_context_pack
+└───────────────────────────────────┘
+```
+
+**Indexes:**
+- `idx_business_profiles_account` on `account_id, created_at DESC` WHERE `deleted_at IS NULL`
+
+**Constraints:**
+- Account can have multiple business profiles (agency use case)
+
+**Soft Delete:** Yes (30-day recovery window)
+
+**RLS:** Users see profiles from their accounts only
 
 ---
 
-## **🔒 UPDATED RLS POLICIES**
+### **Table: leads**
+**Purpose:** Instagram accounts being analyzed (CRM records)
 
-**REPLACE your RLS helper function with this:**
+**Key Design:** Profile data is PATCHED on each re-analysis (follower count updates, bio changes, etc.)
 
-```sql
--- Helper function for account access
-CREATE OR REPLACE FUNCTION auth.user_account_ids()
-RETURNS SETOF uuid
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-AS $$
-  SELECT am.account_id 
-  FROM account_members am
-  JOIN accounts a ON a.id = am.account_id
-  WHERE am.user_id = auth.uid()
-    AND a.deleted_at IS NULL
-    AND a.is_suspended = false
-$$;
-```
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | uuid | PRIMARY KEY | - |
+| account_id | uuid | NOT NULL, FK → accounts(id) ON DELETE RESTRICT | Which account owns this lead |
+| business_profile_id | uuid | FK → business_profiles(id) ON DELETE SET NULL | Which business context used |
+| instagram_username | text | NOT NULL | Instagram handle (e.g., "nike") |
+| display_name | text | - | Display name from profile |
+| profile_pic_url | text | - | Profile picture URL |
+| profile_url | text | - | Full Instagram URL |
+| follower_count | integer | - | Followers (updated on re-analysis) |
+| following_count | integer | - | Following count |
+| post_count | integer | - | Total posts |
+| bio | text | - | Profile bio text |
+| external_url | text | - | Link in bio |
+| is_verified | boolean | DEFAULT false | Blue checkmark? |
+| is_private | boolean | DEFAULT false | Private account? |
+| is_business_account | boolean | DEFAULT false | Business/Creator account? |
+| platform | text | DEFAULT 'instagram' | Future: TikTok, YouTube, etc. |
+| first_analyzed_at | timestamptz | - | First time analyzed |
+| last_analyzed_at | timestamptz | - | Most recent analysis (updated on re-analysis) |
+| deleted_at | timestamptz | - | Soft delete |
+| created_at | timestamptz | DEFAULT NOW() | - |
 
-**ADD RLS to account_members table:**
+**CRITICAL CONSTRAINT:**
+- `UNIQUE (account_id, business_profile_id, instagram_username)`
+- **Allows:** Same Instagram account analyzed for DIFFERENT businesses
+- **Example:** Agency analyzes @nike for "Campaign A" AND "Campaign B" (2 separate lead records)
 
-```sql
-ALTER TABLE account_members ENABLE ROW LEVEL SECURITY;
+**Indexes:**
+- `idx_leads_active` on `account_id, last_analyzed_at DESC` WHERE `deleted_at IS NULL`
+- `idx_leads_username_lookup` on `instagram_username` WHERE `deleted_at IS NULL`
+- `idx_leads_business` on `business_profile_id, created_at DESC`
 
--- Only account owners can manage members
-CREATE POLICY "owners_manage_members" ON account_members
-FOR ALL
-USING (
-  account_id IN (
-    SELECT id FROM accounts 
-    WHERE owner_id = auth.uid() 
-    AND deleted_at IS NULL
-  )
-);
+**Soft Delete:** Yes (30-day recovery)
 
--- Service role bypass
-CREATE POLICY "service_role_bypass" ON account_members
-FOR ALL
-USING (auth.jwt() ->> 'role' = 'service_role');
-```
-
-**UPDATE all existing RLS policies to include admin bypass:**
-
-```sql
--- Example for leads table
-CREATE POLICY "account_access" ON leads
-FOR ALL
-USING (
-  -- Admin users see everything
-  EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND is_admin = true)
-  OR
-  -- Regular users see their account's data
-  (account_id IN (SELECT auth.user_account_ids()) AND deleted_at IS NULL)
-);
-```
-
-**Apply this pattern to:**
-- leads
-- analyses
-- business_profiles
-- account_usage_summary
-- credit_ledger (read-only)
+**RLS:** Users see leads from their accounts only
 
 ---
 
-## **📊 WEBHOOK HANDLERS**
+### **Table: analyses**
+**Purpose:** AI analysis results (supports re-analysis, historical tracking)
 
-**ADD invoice tracking to webhook handlers:**
+**Key Design:** Multiple analyses allowed per lead (track growth over time)
 
-```javascript
-/**
- * Handle invoice.paid webhook
- */
-export async function handleInvoicePaid(invoice) {
-  // Get account from Stripe customer ID
-  const account = await db.query(`
-    SELECT account_id FROM subscriptions 
-    WHERE stripe_customer_id = $1 
-    LIMIT 1
-  `, [invoice.customer]);
-  
-  if (!account.rows.length) {
-    console.error('No account found for customer:', invoice.customer);
-    return;
-  }
-  
-  const accountId = account.rows[0].account_id;
-  
-  // Store invoice record
-  await db.query(`
-    INSERT INTO stripe_invoices (
-      account_id,
-      stripe_invoice_id,
-      amount_cents,
-      status,
-      paid_at
-    ) VALUES ($1, $2, $3, 'paid', $4)
-    ON CONFLICT (stripe_invoice_id) DO NOTHING
-  `, [
-    accountId,
-    invoice.id,
-    invoice.amount_paid,
-    new Date(invoice.status_transitions.paid_at * 1000)
-  ]);
-  
-  console.log('Invoice recorded:', invoice.id);
-}
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | uuid | PRIMARY KEY | - |
+| lead_id | uuid | NOT NULL, FK → leads(id) ON DELETE CASCADE | Which lead was analyzed |
+| account_id | uuid | NOT NULL, FK → accounts(id) ON DELETE RESTRICT | Which account (for RLS) |
+| business_profile_id | uuid | FK → business_profiles(id) ON DELETE SET NULL | Business context used |
+| requested_by | uuid | FK → users(id) ON DELETE SET NULL | Which user triggered |
+| analysis_type | text | NOT NULL, CHECK | 'light' or 'deep' |
+| analysis_version | text | - | AI prompt version (e.g., "v2.3") |
+| status | text | DEFAULT 'pending', CHECK | Analysis lifecycle |
+| ai_response | jsonb | - | Full AI response stored inline |
+| overall_score | integer | - | Extracted from AI response (0-100) |
+| niche_fit_score | integer | - | Extracted score |
+| engagement_score | integer | - | Extracted score |
+| confidence_level | numeric | - | AI confidence (0.0-1.0) |
+| credits_charged | integer | - | Credits deducted (1 or 2) |
+| total_cost_cents | integer | - | Actual API costs (for margin calc) |
+| model_used | text | - | Which AI model ("gpt-4", "claude-3.5-sonnet") |
+| processing_duration_ms | integer | - | Total time to complete |
+| started_at | timestamptz | - | When analysis began |
+| completed_at | timestamptz | - | When analysis finished |
+| deleted_at | timestamptz | - | Soft delete |
+| created_at | timestamptz | DEFAULT NOW() | - |
 
-/**
- * Handle invoice.payment_failed webhook
- */
-export async function handleInvoiceFailed(invoice) {
-  const account = await db.query(`
-    SELECT account_id FROM subscriptions 
-    WHERE stripe_customer_id = $1 
-    LIMIT 1
-  `, [invoice.customer]);
-  
-  if (!account.rows.length) return;
-  
-  const accountId = account.rows[0].account_id;
-  
-  // Store failed invoice
-  await db.query(`
-    INSERT INTO stripe_invoices (
-      account_id,
-      stripe_invoice_id,
-      amount_cents,
-      status
-    ) VALUES ($1, $2, $3, 'uncollectible')
-    ON CONFLICT (stripe_invoice_id) DO NOTHING
-  `, [accountId, invoice.id, invoice.amount_due]);
-  
-  // Update subscription status
-  await db.query(`
-    UPDATE subscriptions
-    SET status = 'past_due'
-    WHERE stripe_customer_id = $1
-  `, [invoice.customer]);
+**Valid Analysis Types:**
+- `light` - Quick analysis (1 credit)
+- `deep` - Comprehensive analysis (2 credits)
+
+**Valid Statuses:**
+- `pending` - Queued
+- `processing` - AI is working
+- `completed` - Finished successfully
+- `failed` - Error occurred
+
+**Constraints:**
+- `CHECK (analysis_type IN ('light', 'deep'))`
+- `CHECK (status IN ('pending', 'processing', 'completed', 'failed'))`
+
+**AI Response Structure (JSONB):**
+```json
+{
+  "overall_score": 85,
+  "niche_fit_score": 90,
+  "engagement_score": 80,
+  "confidence_level": 0.92,
+  "summary": "Excellent fit for B2B SaaS outreach...",
+  "strengths": ["High engagement", "Relevant niche"],
+  "concerns": ["Audience size", "Recent activity"],
+  "outreach_suggestions": ["Personalized DM", "Comment on recent post"],
+  "message_template": "Hi [name], I noticed..."
 }
 ```
 
----
+**Indexes:**
+- `idx_analyses_latest` on `lead_id, completed_at DESC` WHERE `deleted_at IS NULL`
+- `idx_analyses_in_progress` on `lead_id, status` WHERE `status IN ('pending', 'processing')`
+- `idx_analyses_requester` on `requested_by, created_at DESC`
 
-## **✅ PHASE 0 CHECKLIST**
-
-Before proceeding to table creation:
-
-- [ ] Applied all 5 schema corrections to your doc
-- [ ] Added `deduct_credits()` function to Phase 1
-- [ ] Added `generate_slug()` function to Phase 1
-- [ ] Added `stripe_invoices` table definition
-- [ ] Updated RLS helper function with suspension check
-- [ ] Added RLS policies to `account_members`
-- [ ] Updated all table RLS policies with admin bypass
-- [ ] Implemented signup flow in Cloudflare Worker
-- [ ] Added invoice webhook handlers
-- [ ] Removed all references to `is_active` columns
-
----
-
-## **🚀 WHAT'S NEXT**
-
-### **Immediate (Today):**
-1. Review this Phase 0 document
-2. Apply corrections to your master doc
-3. Validate no conflicts
-
-### **Tomorrow (Deploy):**
-1. Run Phase 1 SQL (table creation + constraints)
-2. Deploy `deduct_credits()` and `generate_slug()` functions
-3. Test signup flow end-to-end
-4. Verify RLS policies work
-
-### **Next Week:**
-1. Add remaining indexes (Phase 2)
-2. Add helper RPC functions
-3. Implement cron jobs
-4. Load test credit deduction under concurrency
-
----
-
-**STATUS: Phase 0 Complete ✅**
-
-Your schema is now production-ready for implementation.
-
-
-
-
----
-
-## **🎯 PROJECT OVERVIEW**
-
-**Product:** Instagram lead analysis platform (B2B SaaS)  
-**Tech Stack:** Supabase (PostgreSQL), Cloudflare Workers, Stripe, OpenAI/Claude/Apify  
-**Database State:** Nearly empty (< 2 MB test data) - perfect for clean V2 rebuild  
-**Goal:** Production-ready schema with zero future refactoring needed
-
----
-
-## **✅ LOCKED ARCHITECTURAL DECISIONS**
-
-### **1. BILLING MODEL: Account-Based (Not User-Based)**
-
-**Core Principle:** Credits owned by accounts (not individual users)
-
+**Deduplication Logic (Application-Level):**
 ```
-HIERARCHY:
-└── users (identity)
-    └── account_members (junction table)
-        └── accounts (THE BILLABLE ENTITY)
-            ├── subscriptions (Stripe lives here)
-            ├── credit_ledger (append-only source of truth)
-            └── business_profiles (multiple businesses, shared credits)
-                └── leads & analyses
+Before creating new analysis:
+1. Check: SELECT * FROM analyses WHERE lead_id=X AND status IN ('pending','processing')
+2. If exists: Return error "Analysis already in progress"
+3. Else: Proceed
 ```
 
-**Why Account-Based:**
-- One user can own 5 businesses under ONE account with SHARED credit pool
-- Enables team collaboration (multiple users, one account, shared credits)
-- Industry standard (Notion, Slack, Figma all use this model)
-- Easier to add team members later without schema changes
+**Re-Analysis Allowed:** Yes (no constraint on analyses.lead_id)
+
+**Soft Delete:** Yes (30-day recovery)
+
+**RLS:** Users see analyses from their accounts only
 
 ---
 
-### **2. CREDIT SYSTEM: Dual-Table Architecture**
+### **Table: ai_usage_logs**
+**Purpose:** Track every AI API call (performance monitoring, cost analysis)
 
-**TWO separate tables with different purposes:**
+**CRITICAL SEPARATION:** This is NOT for billing. User sees charges in `credit_ledger`. This is for PLATFORM METRICS.
 
-#### **A) `credit_ledger` (Append-Only Audit Log)**
-- **Purpose:** Financial audit trail, never UPDATE only INSERT
-- **Stores:** Every credit movement (+500 renewal, -2 analysis)
-- **Source of Truth:** Balance = `SUM(amount)` (will materialize later for performance)
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | uuid | PRIMARY KEY | - |
+| account_id | uuid | NOT NULL, FK → accounts(id) ON DELETE RESTRICT | Which account (for cost attribution) |
+| analysis_id | uuid | FK → analyses(id) ON DELETE SET NULL | Related analysis (if any) |
+| provider | text | NOT NULL, CHECK | 'openai', 'anthropic', 'apify' |
+| model | text | - | Specific model ("gpt-4-turbo", "claude-3.5-sonnet") |
+| api_call_type | text | - | 'scrape', 'analysis', 'message_generation' |
+| tokens_input | integer | - | Input tokens (OpenAI/Anthropic) |
+| tokens_output | integer | - | Output tokens |
+| cost_cents | integer | NOT NULL, CHECK >= 0 | Actual API cost |
+| duration_ms | integer | - | Response time |
+| status | text | CHECK | 'success', 'error', 'timeout' |
+| error_message | text | - | Error details (if failed) |
+| started_at | timestamptz | - | API call start |
+| completed_at | timestamptz | - | API call end |
+| created_at | timestamptz | DEFAULT NOW() | - |
+
+**Constraints:**
+- `CHECK (provider IN ('openai', 'anthropic', 'apify'))`
+- `CHECK (status IN ('success', 'error', 'timeout'))`
+- `CHECK (cost_cents >= 0)`
+
+**Example Flow (1 Deep Analysis = 3 AI Usage Logs):**
+```
+1. Apify scrape Instagram profile
+   → INSERT ai_usage_logs (provider='apify', cost_cents=5, duration_ms=4500)
+
+2. OpenAI analyzes scraped data
+   → INSERT ai_usage_logs (provider='openai', model='gpt-4', cost_cents=12, tokens_input=2500)
+
+3. Claude generates outreach message
+   → INSERT ai_usage_logs (provider='anthropic', model='claude-3.5-sonnet', cost_cents=8)
+
+Total: 3 logs, total_cost_cents = 25¢
+User charged: 2 credits (not 25¢ - different systems!)
+```
+
+**Indexes:**
+- `idx_ai_usage_account` on `account_id, created_at DESC`
+- `idx_ai_usage_provider` on `provider, created_at DESC`
+- `idx_ai_usage_analysis` on `analysis_id`
+
+**Retention:** 90 days only (purged by daily cron)
+
+**RLS:** No RLS (service role only, aggregated in platform_metrics_daily)
+
+---
+
+# 📋 PART 3: ARCHITECTURAL DECISIONS
+
+## **1. BILLING MODEL: Account-Based (Not User-Based)**
+
+### **Hierarchy:**
+```
+users (identity)
+  └── account_members (junction)
+      └── accounts (THE BILLABLE ENTITY)
+          ├── subscriptions (Stripe lives here)
+          ├── credit_ledger (credit movements)
+          ├── credit_balances (materialized balance)
+          └── business_profiles (shared credits across businesses)
+              └── leads & analyses
+```
+
+### **Why Account-Based:**
+- ✅ One user can own 5 businesses under ONE account with SHARED credit pool
+- ✅ Enables team collaboration (multiple users, one account, shared credits)
+- ✅ Industry standard (Notion, Slack, Figma, Stripe all use this)
+- ✅ Easier to add team members later without schema changes
+
+### **Example Scenario:**
+```
+User: hamza@example.com
+  └── Account: "Hamza's Agency" (100 credits)
+      ├── Business Profile: "Client A - Fashion Brand"
+      ├── Business Profile: "Client B - Tech Startup"
+      └── Business Profile: "Client C - Food Blog"
+
+All 3 businesses share the same 100 credit pool.
+```
+
+---
+
+## **2. CREDIT SYSTEM: Dual-Table Architecture**
+
+### **Two Tables with Different Purposes:**
+
+#### **A) credit_ledger (Append-Only Audit Log)**
+- **Purpose:** Financial audit trail, NEVER UPDATE only INSERT
+- **Stores:** Every credit movement (+100 renewal, -2 analysis)
+- **Source of Truth:** Current balance = last `balance_after` value
 - **Retention:** Forever (legal/accounting requirement)
+- **Query Speed:** Slow at scale (millions of rows)
 
-#### **B) `account_usage_summary` (Monthly Rollup)**
+#### **B) credit_balances (Materialized View)**
 - **Purpose:** Performance optimization for dashboard queries
-- **Stores:** Aggregated stats per account per month
-- **Updated:** Real-time during month, frozen at month-end
-- **Retention:** Forever (historical trends)
+- **Stores:** Current balance (cached from ledger)
+- **Updated:** Automatically via trigger on every ledger INSERT
+- **Retention:** Forever
+- **Query Speed:** Instant (single row lookup)
 
-**Why Both:**
-- `credit_ledger` = trustworthy audit (legal requirement)
-- `account_usage_summary` = fast queries (don't scan millions of rows)
+### **Why Both:**
+- `credit_ledger` = trustworthy audit (never delete, never mutate)
+- `credit_balances` = fast queries (don't scan millions of rows)
+
+### **Flow Example:**
+```
+1. User triggers deep analysis
+2. Cloudflare Worker calls: deduct_credits(account_id, -2, 'analysis', ...)
+3. Function locks credit_balances row (prevents race conditions)
+4. Function checks: balance >= 2? (prevent overdraft)
+5. Function INSERTs into credit_ledger: amount=-2, balance_after=98
+6. Trigger fires: UPDATE credit_balances SET current_balance=98
+7. Analysis proceeds
+```
 
 ---
 
-### **3. AI COST TRACKING: Separate from Credit Accounting**
+## **3. AI COST TRACKING: Separate from Credit Accounting**
 
-**CRITICAL SEPARATION:** Billing ≠ Performance Monitoring
+### **CRITICAL SEPARATION:** Billing ≠ Performance Monitoring
 
-#### **A) `credit_ledger` (User Charges)**
-- Tracks what user PAID (2 credits = -2 row)
-- No AI provider details here
+#### **A) credit_ledger (What User Paid)**
+- Tracks: User charged 2 credits
+- Does NOT store: OpenAI costs, token counts, provider details
 
-#### **B) `ai_usage_logs` (Actual API Costs)**
-- Tracks every OpenAI/Claude/Apify call separately
+#### **B) ai_usage_logs (Actual API Costs)**
+- Tracks: Every OpenAI/Claude/Apify call separately
 - 1 analysis = 3-8 rows (scrape + AI analysis + message generation)
 - Stores: provider, model, tokens, cost_cents, duration_ms
 - **Retention:** 90 days only (archived after)
 
-#### **C) `platform_metrics_daily` (Admin Dashboard)**
+#### **C) platform_metrics_daily (Admin Dashboard)**
 - Daily rollup of platform-wide stats
 - Aggregates from `ai_usage_logs` + other sources
 - Fast admin queries without scanning millions of rows
 
-**Flow Example:**
+### **Flow Example:**
 ```
 User runs deep analysis:
 1. Apify scrape → INSERT ai_usage_logs (cost: 5¢, duration: 4.5s)
@@ -776,69 +857,94 @@ User runs deep analysis:
 6. Update rollups: account_usage_summary, platform_metrics_daily
 ```
 
+### **Why Separate:**
+- User doesn't care about token counts (just credit cost)
+- Platform needs AI metrics for: profit margin, provider comparison, performance tracking
+- Different retention policies (ledger forever, logs 90 days)
+
 ---
 
-### **4. SUBSCRIPTIONS: Append-Only (Never UPDATE plan_type)**
+## **4. SUBSCRIPTIONS: Append-Only (Never UPDATE plan_type)**
 
-**Rule:** NEVER mutate existing subscription rows
+### **Rule:** NEVER mutate existing subscription rows
 
-```sql
--- ❌ WRONG
+```
+❌ WRONG:
 UPDATE subscriptions SET plan_type = 'pro' WHERE id = 'xxx';
 
--- ✅ CORRECT
+✅ CORRECT:
 -- 1. Cancel old subscription
 UPDATE subscriptions 
 SET status = 'canceled', canceled_at = NOW() 
 WHERE account_id = 'acc_123' AND status = 'active';
 
 -- 2. Insert new subscription
-INSERT INTO subscriptions (account_id, plan_type, ...) 
-VALUES ('acc_123', 'pro', ...);
+INSERT INTO subscriptions (account_id, plan_type, status, ...) 
+VALUES ('acc_123', 'pro', 'active', ...);
 ```
 
-**Why:** Preserves full subscription history (free → pro → enterprise audit trail)
+### **Why:**
+- ✅ Preserves full subscription history (free → pro → enterprise audit trail)
+- ✅ Supports refunds (know what user paid at specific time)
+- ✅ Supports proration (calculate based on historical prices)
+- ✅ Legal compliance (financial audit trail)
 
 ---
 
-### **5. STRIPE INTEGRATION: Optimistic Credit Grant**
+## **5. STRIPE INTEGRATION: Optimistic Credit Grant**
 
-**Flow:**
+### **Flow:**
 ```
 1. User signs up → Supabase auth.users created
    ↓
 2. IMMEDIATE (optimistic, no waiting):
    - INSERT accounts
    - INSERT subscriptions (status = 'pending_stripe_confirmation')
-   - INSERT credit_ledger (+25 credits)
-   - User can START using the app immediately
+   - INSERT credit_ledger (+25 signup bonus)
+   - User can START using app immediately (analyze leads!)
    ↓
 3. BACKGROUND (async, 2-5 seconds):
    - Cloudflare Worker calls Stripe API
-   - Creates customer + subscription
+   - Creates customer: stripe.customers.create()
+   - For free: No subscription object (just customer)
+   - For paid: Create subscription: stripe.subscriptions.create()
    ↓
 4. WEBHOOK (when Stripe confirms):
-   - UPDATE subscriptions SET stripe_customer_id, stripe_subscription_id, status = 'active'
+   - Receive: customer.subscription.created (or invoice.paid)
+   - UPDATE subscriptions SET 
+       stripe_customer_id = 'cus_...', 
+       stripe_subscription_id = 'sub_...',
+       status = 'active'
    ↓
 5. IF STRIPE FAILS (network error, etc.):
    - Cron job retries every 5 minutes
    - User KEEPS their 25 credits (optimistic grant stands)
+   - Eventually succeeds or admin investigates
 ```
 
-**Critical Fields:**
+### **Critical Fields:**
 ```sql
 subscriptions (
   stripe_customer_id text,  -- ← TEXT not UUID (Stripe returns "cus_abc123")
-  stripe_subscription_id text,  -- ← TEXT not UUID (Stripe returns "sub_xyz789")
+  stripe_subscription_id text,  -- ← TEXT not UUID (returns "sub_xyz789")
   status text  -- 'pending_stripe_confirmation' → 'active'
 )
 ```
 
+### **Free Plan Special Case:**
+- Has `stripe_customer_id` (customer always created)
+- Has NO `stripe_subscription_id` (NULL - no Stripe subscription object)
+- Status is immediately `active` (no payment needed)
+- Still has periods (current_period_start/end for monthly cron renewal)
+
 ---
 
-### **6. WEBHOOK IDEMPOTENCY: Prevent Duplicate Processing**
+## **6. WEBHOOK IDEMPOTENCY: Prevent Duplicate Processing**
 
-**Table:** `webhook_events`
+### **Problem:** 
+Stripe retries webhooks on timeout. Without deduplication, user gets double credits.
+
+### **Solution: webhook_events Table**
 
 ```sql
 CREATE TABLE webhook_events (
@@ -850,7 +956,7 @@ CREATE TABLE webhook_events (
 )
 ```
 
-**Handler Pattern:**
+### **Handler Pattern:**
 ```javascript
 // ALWAYS check FIRST before processing
 const existing = await db.query(
@@ -862,27 +968,38 @@ if (existing.rows.length > 0) {
   return { received: true, message: 'already_processed' };
 }
 
-// Process event...
+// Process event (grant credits, update subscription, etc.)
+// ...
+
 // Then record it
-await db.insert('webhook_events', {...});
+await db.insert('webhook_events', {
+  stripe_event_id: event.id,
+  event_type: event.type,
+  account_id: accountId,
+  payload: event
+});
 ```
 
-**Why Critical:** Stripe retries webhooks on timeout. Without this, user gets double credits.
+### **Why Critical:**
+- Stripe sends webhook
+- Your worker processes (grants 100 credits)
+- Network timeout before response
+- Stripe retries webhook
+- Without dedup: User gets 200 credits (BAD!)
+- With dedup: Worker sees existing event_id, skips processing (GOOD!)
 
 ---
 
-### **7. LEADS + ANALYSES: Separate Tables, JSONB Inline**
+## **7. LEADS + ANALYSES: Separate Tables, JSONB Inline**
 
-**Design Decision:** Keep separate (not denormalized)
+### **Design Decision:** Keep separate (not denormalized)
 
 ```sql
 leads (
   -- Profile data (PATCHED on each re-analysis)
-  instagram_username text UNIQUE,
+  instagram_username text,
   follower_count integer,
   bio text,
-  -- etc.
-  
   -- Metadata
   first_analyzed_at timestamptz,
   last_analyzed_at timestamptz  -- ← Updated on re-analysis
@@ -904,55 +1021,79 @@ analyses (
 )
 ```
 
-**Why No Denormalization:**
-- ❌ Don't store `latest_score` in leads table (sync bugs)
-- ✅ Use indexes + LATERAL joins for fast queries
-- ✅ Supports historical analysis tracking (UI feature later)
+### **Why No Denormalization:**
+- ❌ Don't store `latest_score` in leads table (causes sync bugs)
+- ✅ Use indexes + LATERAL joins for fast "latest analysis" queries
+- ✅ Supports historical analysis tracking (UI feature for "track growth")
+- ✅ Clean separation: leads = profile data, analyses = AI results
+
+### **Query Pattern for "Latest Analysis":**
+```sql
+SELECT l.*, a.* 
+FROM leads l
+LEFT JOIN LATERAL (
+  SELECT * FROM analyses 
+  WHERE lead_id = l.id 
+    AND deleted_at IS NULL
+  ORDER BY completed_at DESC 
+  LIMIT 1
+) a ON true
+WHERE l.account_id = $1 AND l.deleted_at IS NULL;
+```
 
 ---
 
-### **8. BUSINESS PROFILES: Minimal Schema, JSONB for Flexibility**
+## **8. BUSINESS PROFILES: Minimal Schema, JSONB for Flexibility**
 
-**User-Editable Fields:**
+### **User-Editable Fields:**
 ```sql
 business_profiles (
-  business_name text,  -- Displayed in UI everywhere
-  website text,  -- User can edit directly
-  business_one_liner text,  -- Displayed in dashboard greeting
+  business_name text,        -- Direct edit
+  website text,              -- Direct edit
+  business_one_liner text,   -- Direct edit
   
   -- Everything else in JSONB
-  business_context_pack jsonb  -- {niche, target_audience, value_prop, ...}
+  business_context_pack jsonb  -- {niche, audience, value_prop, ...}
 )
 ```
 
-**Why JSONB:**
-- Onboarding collects 15+ fields (niche, audience, problems, etc.)
-- AI generates `business_context_pack` from these
-- User rarely edits (set-and-forget)
-- If editing needed: "Regenerate from Scratch" button shows onboarding form again
+### **Why JSONB:**
+- ✅ Onboarding collects 15+ fields (niche, audience, problems, tone, etc.)
+- ✅ AI generates `business_context_pack` from these during onboarding
+- ✅ User rarely edits (set-and-forget)
+- ✅ If editing needed: "Regenerate from Scratch" button shows onboarding form again
+- ✅ Future-proof: Can add fields without ALTER TABLE
 
-**Settings UI:**
+### **Settings UI Pattern:**
 ```
 ┌─ Business Profile ────────────────┐
-│ Name: [Oslira                  ]  │ ← Direct edit
-│ Website: [oslira.com           ]  │ ← Direct edit
-│ One-liner: [We help copywriters...]│ ← Direct edit
+│ Name: [Oslira Marketing        ]  │ ← Direct column edit
+│ Website: [oslira.com           ]  │ ← Direct column edit
+│ Tagline: [We write copy that sells]│ ← Direct column edit
 │                                   │
-│ [Regenerate Business Context] ← Opens onboarding form
+│ Business Context (AI-generated):  │
+│ ┌─────────────────────────────┐  │
+│ │ Niche: B2B SaaS copywriting │  │
+│ │ Audience: Tech founders     │  │
+│ │ Value Prop: Conversion copy │  │
+│ │ ... (10+ more fields)       │  │
+│ └─────────────────────────────┘  │
+│                                   │
+│ [Regenerate Business Context]     │ ← Opens onboarding form
 └───────────────────────────────────┘
 ```
 
 ---
 
-### **9. SOFT DELETES: 30-Day Recovery Window**
+## **9. SOFT DELETES: 30-Day Recovery Window**
 
-**Tables with `deleted_at`:**
+### **Tables with deleted_at:**
 - accounts
 - business_profiles
 - leads
 - analyses
 
-**Query Pattern:**
+### **Query Pattern:**
 ```sql
 -- ALWAYS filter out deleted records
 SELECT * FROM leads 
@@ -960,7 +1101,7 @@ WHERE account_id = $1
   AND deleted_at IS NULL;
 ```
 
-**Cleanup Cron (Daily):**
+### **Cleanup Cron (Daily at 2 AM UTC):**
 ```sql
 -- Hard delete after 30 days
 DELETE FROM leads WHERE deleted_at < NOW() - INTERVAL '30 days';
@@ -969,7 +1110,7 @@ DELETE FROM business_profiles WHERE deleted_at < NOW() - INTERVAL '30 days';
 DELETE FROM accounts WHERE deleted_at < NOW() - INTERVAL '30 days';
 ```
 
-**Partial Indexes (Performance):**
+### **Partial Indexes (Performance):**
 ```sql
 -- Only index active records
 CREATE INDEX idx_leads_active 
@@ -977,11 +1118,27 @@ ON leads(account_id, last_analyzed_at DESC)
 WHERE deleted_at IS NULL;
 ```
 
+### **User Experience:**
+```
+User deletes lead:
+  → UPDATE leads SET deleted_at = NOW()
+  → Analyses for that lead also soft-deleted (app logic, not CASCADE)
+  → Lead disappears from dashboard
+  → "Trash" view shows deleted leads (< 30 days old)
+  → "Restore" button clears deleted_at
+  
+After 30 days:
+  → Daily cron hard-deletes
+  → Analyses CASCADE deleted (foreign key)
+  → credit_ledger.lead_id → NULL (audit preserved)
+  → Transaction shows: "2 credits charged for [deleted lead]"
+```
+
 ---
 
-### **10. FOREIGN KEY CASCADE RULES**
+## **10. FOREIGN KEY CASCADE RULES**
 
-**Strategy:** Preserve audit trail, cascade only where data is meaningless without parent
+### **Strategy:** Preserve audit trail, cascade only where data is meaningless without parent
 
 ```sql
 -- CASCADE (child meaningless without parent)
@@ -997,27 +1154,27 @@ analyses.business_profile_id → business_profiles(id) ON DELETE SET NULL
 accounts.id ← all child tables ON DELETE RESTRICT
 ```
 
-**Example:**
+### **Example Flow:**
 ```
 User soft-deletes lead:
   UPDATE leads SET deleted_at = NOW()
     ↓
   Analyses soft-deleted too (app logic, not CASCADE)
     ↓
-  After 30 days: Hard DELETE leads
+  After 30 days: Hard DELETE leads (cron)
     ↓
-  Analyses hard-deleted (CASCADE)
+  Analyses hard-deleted (CASCADE foreign key)
     ↓
-  credit_ledger.lead_id → NULL (audit preserved)
+  credit_ledger.lead_id → NULL (SET NULL preserves audit)
     ↓
-  Transaction record: "2 credits charged for [deleted lead]"
+  Transaction record intact: "2 credits charged for [deleted lead]"
 ```
 
 ---
 
-### **11. DEDUPLICATION: Application-Level Check**
+## **11. DEDUPLICATION: Application-Level Check**
 
-**No database constraint** - flexible business logic
+### **No Database Constraint** - Flexible Business Logic
 
 ```javascript
 // Before creating analysis
@@ -1033,108 +1190,182 @@ const existing = await db.query(`
 if (existing.rows.length > 0) {
   return { error: 'Analysis already in progress' };
 }
+
+// Proceed with analysis creation
 ```
 
-**Why No DB Constraint:**
-- Allows re-analysis after completion
-- Supports future: scheduled re-analysis, comparison mode
-- Easier to change business rules
+### **Why No DB Constraint:**
+- ✅ Allows re-analysis after completion (track growth over time)
+- ✅ Supports future features: scheduled re-analysis, comparison mode
+- ✅ Easier to change business rules without migrations
+- ✅ Application has more context (can show friendly error message)
 
 ---
 
-### **12. PLANS AS DATA (Not Hardcoded)**
+## **12. PLANS AS DATA (Not Hardcoded)**
 
+### **Benefits:**
+- ✅ Change credits without code deploy ("Black Friday: 50 free credits instead of 25!")
+- ✅ Add new plans without schema changes (just INSERT)
+- ✅ Feature flags per plan in JSONB
+- ✅ A/B test pricing (create test plans, assign to specific users)
+
+### **Example: Changing Credits:**
 ```sql
-plans (
-  id text PRIMARY KEY,  -- 'free', 'pro', 'enterprise'
-  name text,
-  credits_per_month integer,
-  price_cents integer,
-  stripe_price_id text,
-  features jsonb
-)
+-- Marketing decides to give Pro users 150 credits instead of 100
+UPDATE plans SET credits_per_month = 150 WHERE id = 'pro';
 
-INSERT INTO plans VALUES
-  ('free', 'Free Plan', 25, 0, NULL, '{"max_profiles": 10}'),
-  ('pro', 'Pro Plan', 500, 9700, 'price_1ABC', '{"max_profiles": 1000}');
+-- Next month's cron renewal automatically grants 150 credits (uses plans table)
 ```
 
-**Benefits:**
-- Change credits without code deploy ("Black Friday: 50 free credits!")
-- Add new plans without schema changes
-- Feature flags per plan in JSONB
+### **Example: Adding New Plan:**
+```sql
+-- Launch "Starter" tier between Free and Pro
+INSERT INTO plans VALUES (
+  'starter',           -- id
+  'Starter Plan',      -- name
+  50,                  -- credits_per_month
+  1500,                -- price_cents ($15)
+  NULL,                -- stripe_price_id (fill after creating in Stripe)
+  '{"max_businesses": 2}'  -- features
+);
+```
+
+### **Example: Changing Price:**
+```sql
+-- Pro goes from $30 to $35
+UPDATE plans SET price_cents = 3500 WHERE id = 'pro';
+
+-- BUT: This doesn't affect existing Stripe subscriptions!
+-- You need to:
+-- 1. Create NEW Stripe price: $35/month
+-- 2. Update plans table with new stripe_price_id
+-- 3. Old subscriptions continue at $30 (grandfathered)
+-- 4. New subscriptions use $35
+```
 
 ---
 
-### **13. NAMING CONVENTIONS (Strict Standards)**
+## **13. NAMING CONVENTIONS (Strict Standards)**
 
 | Pattern | Examples | Rationale |
 |---------|----------|-----------|
-| Timestamps end in `_at` | `created_at`, `deleted_at`, `completed_at` | Consistency |
-| `status` = mutable state | `'pending'`, `'active'`, `'canceled'` | Lifecycle changes |
+| Timestamps end in `_at` | `created_at`, `deleted_at`, `completed_at` | Consistency, clearly a timestamp |
+| `status` = mutable state | `'pending'`, `'active'`, `'canceled'` | Lifecycle changes expected |
 | `{thing}_type` = category | `plan_type`, `analysis_type`, `transaction_type` | Immutable classification |
 | Money in cents | `price_cents`, `cost_cents` | No decimals, no rounding errors |
-| Duration in milliseconds | `processing_duration_ms` | Explicit unit |
-| Booleans use `is_` | `is_verified`, `is_active`, `is_suspended` | Clear identification |
-| Primary key always `id` | accounts(id), leads(id) | NOT `account_id` or `lead_id` |
+| Duration in milliseconds | `processing_duration_ms` | Explicit unit in column name |
+| Booleans use `is_` | `is_verified`, `is_active`, `is_suspended` | Clear boolean identification |
+| Primary key always `id` | accounts(id), leads(id) | NOT `account_id` or `lead_id` in same table |
 
 ---
 
-### **14. PERFORMANCE INDEXES (Core Set)**
+## **14. PERFORMANCE INDEXES (Core Set)**
 
+### **Critical for Webhook Deduplication:**
 ```sql
--- Webhook idempotency (critical)
 CREATE UNIQUE INDEX idx_webhook_stripe_id ON webhook_events(stripe_event_id);
+```
 
--- Dashboard queries
+### **Dashboard Queries:**
+```sql
 CREATE INDEX idx_leads_active ON leads(account_id, last_analyzed_at DESC) 
 WHERE deleted_at IS NULL;
 
--- Latest analysis
 CREATE INDEX idx_analyses_latest ON analyses(lead_id, completed_at DESC) 
 WHERE deleted_at IS NULL;
+```
 
--- Deduplication check
+### **Deduplication Check:**
+```sql
 CREATE INDEX idx_analyses_in_progress ON analyses(lead_id, status) 
 WHERE status IN ('pending', 'processing') AND deleted_at IS NULL;
+```
 
--- Credit balance (will materialize later)
+### **Credit Balance (Materialized):**
+```sql
 CREATE INDEX idx_credit_ledger_account ON credit_ledger(account_id, created_at DESC);
+CREATE INDEX idx_credit_balances_account ON credit_balances(account_id);
+```
 
--- Active subscription
+### **Active Subscription:**
+```sql
 CREATE INDEX idx_subscriptions_active ON subscriptions(account_id, status) 
 WHERE status = 'active';
 
--- Account membership (RLS helper)
-CREATE INDEX idx_account_members_user ON account_members(user_id, account_id);
+CREATE UNIQUE INDEX idx_one_active_subscription ON subscriptions(account_id) 
+WHERE status = 'active';
+```
 
--- AI usage logs (90-day queries)
+### **Account Membership (RLS Helper):**
+```sql
+CREATE INDEX idx_account_members_user ON account_members(user_id, account_id);
+```
+
+### **AI Usage Logs:**
+```sql
 CREATE INDEX idx_ai_usage_account ON ai_usage_logs(account_id, created_at DESC);
+CREATE INDEX idx_ai_usage_provider ON ai_usage_logs(provider, created_at DESC);
 ```
 
 ---
 
-### **15. ROW-LEVEL SECURITY (RLS) STRATEGY**
+## **15. ROW-LEVEL SECURITY (RLS) STRATEGY**
 
-**Helper Function:**
+### **Security Model:**
+- ✅ All user-facing tables have RLS enabled
+- ✅ Users only access their own account data
+- ✅ Soft-deleted records hidden by default
+- ✅ Service role bypasses all policies (Cloudflare Worker)
+- ✅ Admin users bypass all policies (support/debugging)
+- ✅ No anonymous access (authentication required)
+
+### **Helper Functions:**
+
+#### **Function: auth.user_account_ids()**
 ```sql
+-- Returns all account IDs the current user belongs to
+-- Excludes deleted and suspended accounts
 CREATE FUNCTION auth.user_account_ids()
 RETURNS SETOF uuid
-LANGUAGE sql
-STABLE
 AS $$
-  SELECT account_id 
-  FROM account_members 
-  WHERE user_id = auth.uid()
+  SELECT am.account_id 
+  FROM account_members am
+  JOIN accounts a ON a.id = am.account_id
+  WHERE am.user_id = auth.uid()
+    AND a.deleted_at IS NULL
+    AND a.is_suspended = false
 $$;
 ```
 
-**Policy Pattern (Applied to All User-Facing Tables):**
+#### **Function: auth.is_admin()**
+```sql
+-- Returns true if current user is admin (and not suspended)
+CREATE FUNCTION auth.is_admin()
+RETURNS boolean
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM users 
+    WHERE id = auth.uid() 
+    AND is_admin = true
+    AND is_suspended = false
+  )
+$$;
+```
+
+### **Policy Pattern (Applied to All User-Facing Tables):**
+
 ```sql
 -- Users see data for accounts they belong to
 CREATE POLICY "account_access" ON leads
 FOR ALL
-USING (account_id IN (SELECT auth.user_account_ids()));
+USING (
+  auth.is_admin()  -- Admins see everything
+  OR (
+    account_id IN (SELECT auth.user_account_ids())
+    AND deleted_at IS NULL
+  )
+);
 
 -- Service role (Cloudflare Worker) bypasses RLS
 CREATE POLICY "service_role_bypass" ON leads
@@ -1142,508 +1373,256 @@ FOR ALL
 USING (auth.jwt() ->> 'role' = 'service_role');
 ```
 
-**Tables with RLS:**
-- leads
-- analyses
-- business_profiles
-- account_usage_summary
+### **Tables with RLS:**
+- accounts (strict - only user's accounts)
+- account_members (owners manage members)
+- leads (account-scoped, active only)
+- analyses (account-scoped, active only)
+- business_profiles (account-scoped, active only)
 - credit_ledger (read-only for users)
+- credit_balances (read-only for users)
+- account_usage_summary (read-only for users)
+- subscriptions (read-only for users)
+- stripe_invoices (read-only for users)
 
-**Tables WITHOUT RLS (Backend-Only):**
-- webhook_events (service role only)
-- platform_metrics_daily (admin only)
-- ai_usage_logs (service role only)
-- plans (public read)
+### **Tables WITHOUT RLS (Service Role Only):**
+- webhook_events (Stripe processing only)
+- ai_usage_logs (aggregated in platform_metrics_daily)
+- platform_metrics_daily (admin dashboard only)
+- plans (public read access for pricing page)
 
 ---
 
-### **16. DATA RETENTION & ARCHIVAL STRATEGY**
+## **16. DATA RETENTION & ARCHIVAL STRATEGY**
 
-**Hot Data (Fast queries, recent):**
+### **Hot Data (Fast queries, recent):**
 ```
 ai_usage_logs: 90 days rolling window
+├── Queried for: Real-time performance metrics
 ├── Partitioned by month (PostgreSQL native)
-└── ~13.5M rows max at scale
+└── ~13.5M rows max at scale (assuming 5000 analyses/day)
 ```
 
-**Warm Data (Aggregated, all history):**
+### **Warm Data (Aggregated, all history):**
 ```
 account_usage_summary: Forever (monthly rollups)
 platform_metrics_daily: Forever (daily rollups)
-credit_ledger: Forever (audit requirement)
+credit_ledger: Forever (audit requirement, legal compliance)
 subscriptions: Forever (append-only history)
 ```
 
-**Cold Data (Archived, rarely accessed):**
+### **Cold Data (Archived, rarely accessed):**
 ```
 ai_usage_logs older than 90 days:
-├── Export to S3/Glacier
-└── Purge from database
+├── Export to S3/Glacier (before deletion)
+├── Parquet format (compressed, queryable)
+└── Purge from database (daily cron)
 ```
 
-**Cleanup Cron Jobs:**
+### **Cleanup Cron Jobs:**
+
+#### **Daily (2 AM UTC):**
 ```sql
--- Daily
+-- Delete AI logs older than 90 days
 DELETE FROM ai_usage_logs WHERE created_at < NOW() - INTERVAL '90 days';
+
+-- Hard-delete soft-deleted records older than 30 days
 DELETE FROM leads WHERE deleted_at < NOW() - INTERVAL '30 days';
 DELETE FROM analyses WHERE deleted_at < NOW() - INTERVAL '30 days';
+DELETE FROM business_profiles WHERE deleted_at < NOW() - INTERVAL '30 days';
+DELETE FROM accounts WHERE deleted_at < NOW() - INTERVAL '30 days';
+```
 
--- Monthly (1st of month)
+#### **Monthly (1st of month, 3 AM UTC):**
+```sql
+-- Freeze last month's usage summaries
 UPDATE account_usage_summary 
 SET is_finalized = true
-WHERE period_end = DATE_TRUNC('month', NOW());
+WHERE period_end = DATE_TRUNC('month', NOW() - INTERVAL '1 day');
+
+-- Grant monthly credits to all active subscriptions
+-- (via get_renewable_subscriptions() function + deduct_credits())
 ```
 
 ---
 
-## **📋 COMPLETE TABLE DEFINITIONS**
+# 📋 PART 4: BUSINESS LOGIC FUNCTIONS
 
-### **LAYER 1: IDENTITY & AUTH**
+## **Function: deduct_credits()**
+**Purpose:** Atomically deduct/grant credits (prevents race conditions)
 
-#### **users**
+### **Signature:**
 ```sql
-users (
-  id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-  email text UNIQUE NOT NULL,
-  full_name text,
-  signature_name text,
-  avatar_url text,
-  onboarding_completed boolean DEFAULT false,
-  is_admin boolean DEFAULT false,
-  is_suspended boolean DEFAULT false,
-  suspended_at timestamptz,
-  suspended_reason text,
-  last_seen_at timestamptz,
-  created_at timestamptz DEFAULT NOW(),
-  updated_at timestamptz DEFAULT NOW()
-)
+deduct_credits(
+  p_account_id uuid,
+  p_amount integer,          -- Negative for deductions, positive for grants
+  p_transaction_type text,
+  p_description text,
+  p_metadata jsonb DEFAULT '{}'::jsonb
+) RETURNS uuid  -- Returns transaction ID
 ```
+
+### **What It Does:**
+1. **Locks** credit_balances row (prevents concurrent modifications)
+2. **Checks** current balance
+3. **Validates** no overdraft (balance + amount >= 0)
+4. **Inserts** into credit_ledger with calculated balance_after
+5. **Updates** credit_balances.current_balance (materialized view)
+6. **Returns** transaction ID (for reference in analyses table)
+
+### **Usage Examples:**
+```javascript
+// Deduct 2 credits for deep analysis
+const txId = await db.rpc('deduct_credits', {
+  p_account_id: accountId,
+  p_amount: -2,  // Negative = deduction
+  p_transaction_type: 'analysis',
+  p_description: `Deep analysis of @${username}`,
+  p_metadata: { 
+    analysis_id: analysisId, 
+    lead_id: leadId,
+    analysis_type: 'deep'
+  }
+});
+// Throws exception if insufficient credits
+
+// Grant 100 credits for monthly renewal
+await db.rpc('deduct_credits', {
+  p_account_id: accountId,
+  p_amount: 100,  // Positive = grant
+  p_transaction_type: 'subscription_renewal',
+  p_description: 'Monthly Pro plan renewal'
+});
+
+// Admin manually adds 50 credits
+await db.rpc('deduct_credits', {
+  p_account_id: accountId,
+  p_amount: 50,
+  p_transaction_type: 'admin_grant',
+  p_description: 'Compensation for downtime'
+});
+```
+
+### **Why Function (Not Direct INSERT):**
+- ✅ Prevents race conditions (two analyses starting simultaneously)
+- ✅ Atomic balance calculation (no SUM() queries)
+- ✅ Overdraft protection (transaction fails if insufficient credits)
+- ✅ Consistent error messages
+- ✅ Audit trail (all movements logged)
 
 ---
 
-### **LAYER 2: BILLING FOUNDATION**
+## **Function: generate_slug()** (continued)
+**Purpose:** Create URL-safe slugs with collision handling
 
-#### **accounts**
+### **Signature:**
 ```sql
-accounts (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  owner_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-  name text NOT NULL,
-  slug text UNIQUE,
-  deleted_at timestamptz,
-  created_at timestamptz DEFAULT NOW(),
-  updated_at timestamptz DEFAULT NOW()
-)
+generate_slug(input_text text) RETURNS text
 ```
 
-#### **account_members**
-```sql
-account_members (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  role text DEFAULT 'member',
-  invited_by uuid REFERENCES users(id),
-  joined_at timestamptz DEFAULT NOW(),
-  created_at timestamptz DEFAULT NOW(),
-  
-  UNIQUE (account_id, user_id)
-)
+### **What It Does:**
+1. **Lowercase** input text
+2. **Replace** non-alphanumeric with hyphens
+3. **Remove** leading/trailing hyphens
+4. **Truncate** to 50 characters
+5. **Ensure uniqueness** (append -2, -3, etc. if collision)
+
+### **Usage Examples:**
+```javascript
+const slug = await db.rpc('generate_slug', { 
+  input_text: 'Hamza Williams'
+});
+// Returns: "hamza-williams"
+
+// If "hamza-williams" exists:
+// Returns: "hamza-williams-2"
+
+// Special characters:
+generate_slug('John\'s Agency & Co!')
+// Returns: "john-s-agency-co"
+
+// Long names (truncated):
+generate_slug('The Very Long Business Name That Exceeds Fifty Characters')
+// Returns: "the-very-long-business-name-that-exceeds-fif"
 ```
 
-#### **plans**
-```sql
-plans (
-  id text PRIMARY KEY,
-  name text NOT NULL,
-  credits_per_month integer NOT NULL,
-  price_cents integer NOT NULL,
-  stripe_price_id text,
-  is_active boolean DEFAULT true,
-  features jsonb,
-  created_at timestamptz DEFAULT NOW()
-)
-```
-
-#### **subscriptions**
-```sql
-subscriptions (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-  plan_type text NOT NULL REFERENCES plans(id),
-  price_cents integer NOT NULL,
-  stripe_customer_id text,
-  stripe_subscription_id text,
-  stripe_price_id text,
-  status text DEFAULT 'active',
-  current_period_start timestamptz NOT NULL,
-  current_period_end timestamptz NOT NULL,
-  canceled_at timestamptz,
-  created_at timestamptz DEFAULT NOW()
-)
-```
-
-#### **credit_ledger**
-```sql
-credit_ledger (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-  amount integer NOT NULL,
-  balance_after integer NOT NULL,
-  transaction_type text NOT NULL,
-  reference_type text,
-  reference_id uuid,
-  description text,
-  metadata jsonb,
-  created_by uuid REFERENCES users(id),
-  created_at timestamptz DEFAULT NOW()
-)
-```
-
-#### **account_usage_summary**
-```sql
-account_usage_summary (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-  period_start date NOT NULL,
-  period_end date NOT NULL,
-  credits_used integer DEFAULT 0,
-  light_analyses_count integer DEFAULT 0,
-  deep_analyses_count integer DEFAULT 0,
-  total_analyses_count integer DEFAULT 0,
-  total_cost_cents integer DEFAULT 0,
-  is_finalized boolean DEFAULT false,
-  created_at timestamptz DEFAULT NOW(),
-  updated_at timestamptz DEFAULT NOW(),
-  
-  UNIQUE (account_id, period_start)
-)
-```
-
-#### **platform_metrics_daily**
-```sql
-platform_metrics_daily (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  metric_date date NOT NULL UNIQUE,
-  
-  total_analyses_count integer DEFAULT 0,
-  light_analyses_count integer DEFAULT 0,
-  deep_analyses_count integer DEFAULT 0,
-  active_accounts_count integer DEFAULT 0,
-  new_accounts_count integer DEFAULT 0,
-  
-  openai_calls_count integer DEFAULT 0,
-  anthropic_calls_count integer DEFAULT 0,
-  apify_calls_count integer DEFAULT 0,
-  openai_cost_cents integer DEFAULT 0,
-  anthropic_cost_cents integer DEFAULT 0,
-  apify_cost_cents integer DEFAULT 0,
-  total_cost_cents integer DEFAULT 0,
-  
-  openai_avg_duration_ms integer DEFAULT 0,
-  anthropic_avg_duration_ms integer DEFAULT 0,
-  apify_avg_duration_ms integer DEFAULT 0,
-  openai_error_count integer DEFAULT 0,
-  anthropic_error_count integer DEFAULT 0,
-  apify_error_count integer DEFAULT 0,
-  
-  credits_purchased_count integer DEFAULT 0,
-  revenue_cents integer DEFAULT 0,
-  profit_margin_cents integer DEFAULT 0,
-  
-  daily_active_users integer DEFAULT 0,
-  avg_lead_score numeric,
-  high_quality_leads_count integer DEFAULT 0,
-  
-  mrr_cents integer DEFAULT 0,
-  arr_cents integer DEFAULT 0,
-  customer_count integer DEFAULT 0,
-  
-  created_at timestamptz DEFAULT NOW(),
-  updated_at timestamptz DEFAULT NOW()
-)
-```
-
-#### **stripe_invoices**
-```sql
-stripe_invoices (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-  stripe_invoice_id text UNIQUE NOT NULL,
-  stripe_subscription_id text,
-  amount_cents integer NOT NULL,
-  currency text DEFAULT 'usd',
-  status text NOT NULL,
-  paid_at timestamptz,
-  failed_at timestamptz,
-  failure_reason text,
-  created_at timestamptz DEFAULT NOW()
-)
-```
-
-#### **webhook_events**
-```sql
-webhook_events (
-  stripe_event_id text PRIMARY KEY,
-  event_type text NOT NULL,
-  account_id uuid REFERENCES accounts(id),
-  processed_at timestamptz DEFAULT NOW(),
-  payload jsonb
-)
-```
+### **Why Function (Not Application Logic):**
+- ✅ Atomic uniqueness check (prevents race conditions)
+- ✅ Consistent slug generation (same input = same output)
+- ✅ Database handles collision detection
+- ✅ Reusable (accounts, business profiles, future entities)
 
 ---
 
-### **LAYER 3: BUSINESS LOGIC**
+## **Function: get_renewable_subscriptions()**
+**Purpose:** Find subscriptions that need monthly credit grants
 
-#### **business_profiles**
+### **Signature:**
 ```sql
-business_profiles (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-  
-  business_name text NOT NULL,
-  website text,
-  business_one_liner text,
-  
-  business_context_pack jsonb,
-  
-  context_version text DEFAULT 'v1.0',
-  context_generated_at timestamptz,
-  context_manually_edited boolean DEFAULT false,
-  context_updated_at timestamptz,
-  
-  is_active boolean DEFAULT true,
-  deleted_at timestamptz,
-  created_at timestamptz DEFAULT NOW(),
-  updated_at timestamptz DEFAULT NOW()
+get_renewable_subscriptions() RETURNS TABLE (
+  id uuid,
+  account_id uuid,
+  plan_type text,
+  credits_per_month integer,
+  current_period_end timestamptz
 )
 ```
 
-#### **leads**
-```sql
-leads (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-  business_profile_id uuid REFERENCES business_profiles(id) ON DELETE SET NULL,
+### **What It Does:**
+Returns all active subscriptions where:
+- Status = 'active'
+- current_period_end < NOW() (period has ended)
+- Account is not deleted or suspended
+
+### **Usage (Monthly Cron):**
+```javascript
+// Run on 1st of month at 3 AM UTC
+const subscriptions = await db.rpc('get_renewable_subscriptions');
+
+for (const sub of subscriptions) {
+  // Grant credits
+  await db.rpc('deduct_credits', {
+    p_account_id: sub.account_id,
+    p_amount: sub.credits_per_month,  // Positive = grant
+    p_transaction_type: 'subscription_renewal',
+    p_description: `Monthly ${sub.plan_type} renewal`
+  });
   
-  instagram_username text UNIQUE NOT NULL,
-  display_name text,
-  profile_pic_url text,
-  profile_url text,
-  follower_count integer,
-  following_count integer,
-  post_count integer,
-  bio text,
-  external_url text,
-  is_verified boolean DEFAULT false,
-  is_private boolean DEFAULT false,
-  is_business_account boolean DEFAULT false,
-  platform text DEFAULT 'instagram',
+  // Update subscription period
+  const newPeriodEnd = new Date(sub.current_period_end);
+  newPeriodEnd.setMonth(newPeriodEnd.getMonth() + 1);
   
-  first_analyzed_at timestamptz,
-  last_analyzed_at timestamptz,
-  deleted_at timestamptz,
-  created_at timestamptz DEFAULT NOW()
-)
+  await db.query(`
+    UPDATE subscriptions
+    SET current_period_start = $1,
+        current_period_end = $2
+    WHERE id = $3
+  `, [sub.current_period_end, newPeriodEnd, sub.id]);
+}
 ```
 
-#### **analyses**
-```sql
-analyses (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  lead_id uuid NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
-  account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-  business_profile_id uuid REFERENCES business_profiles(id) ON DELETE SET NULL,
-  
-  analysis_type text NOT NULL,
-  analysis_version text,
-  status text DEFAULT 'pending',
-  
-  ai_response jsonb,
-  
-  overall_score integer,
-  niche_fit_score integer,
-  engagement_score integer,
-  confidence_level numeric,
-  
-  credits_charged integer,
-  total_cost_cents integer,
-  model_used text,
-  processing_duration_ms integer,
-  
-  started_at timestamptz,
-  completed_at timestamptz,
-  deleted_at timestamptz,
-  created_at timestamptz DEFAULT NOW()
-)
-```
-
-#### **ai_usage_logs**
-```sql
-ai_usage_logs (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-  analysis_id uuid REFERENCES analyses(id) ON DELETE SET NULL,
-  
-  provider text NOT NULL,
-  model text,
-  api_call_type text,
-  
-  tokens_input integer,
-  tokens_output integer,
-  cost_cents integer NOT NULL,
-  
-  duration_ms integer,
-  status text,
-  error_message text,
-  
-  started_at timestamptz,
-  completed_at timestamptz,
-  created_at timestamptz DEFAULT NOW()
-)
-```
+### **Why Function:**
+- ✅ Complex JOIN logic (subscriptions + plans + accounts)
+- ✅ Reusable (manual renewal trigger, debugging)
+- ✅ Testable (can run in SQL console)
 
 ---
 
-## **🔧 PHASE 1: PRE-LAUNCH CRITICAL (1-2 Days)**
+## **Trigger: update_updated_at_column()**
+**Purpose:** Auto-update updated_at timestamp on row changes
 
-### **1. Foreign Key Constraints**
-```sql
--- All relationships explicitly defined with cascade behavior
-ALTER TABLE account_members ADD CONSTRAINT fk_account 
-  FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
+### **Applied To:**
+- users
+- accounts
+- business_profiles
+- account_usage_summary
+- platform_metrics_daily
+- credit_balances
 
-ALTER TABLE account_members ADD CONSTRAINT fk_user 
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
-
-ALTER TABLE subscriptions ADD CONSTRAINT fk_account 
-  FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE RESTRICT;
-
-ALTER TABLE credit_ledger ADD CONSTRAINT fk_account 
-  FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE RESTRICT;
-
-ALTER TABLE leads ADD CONSTRAINT fk_account 
-  FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE RESTRICT;
-
-ALTER TABLE leads ADD CONSTRAINT fk_business_profile 
-  FOREIGN KEY (business_profile_id) REFERENCES business_profiles(id) ON DELETE SET NULL;
-
-ALTER TABLE analyses ADD CONSTRAINT fk_lead 
-  FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE;
-
-ALTER TABLE analyses ADD CONSTRAINT fk_account 
-  FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE RESTRICT;
-
-ALTER TABLE analyses ADD CONSTRAINT fk_business_profile 
-  FOREIGN KEY (business_profile_id) REFERENCES business_profiles(id) ON DELETE SET NULL;
-
-ALTER TABLE ai_usage_logs ADD CONSTRAINT fk_account 
-  FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE RESTRICT;
-
-ALTER TABLE ai_usage_logs ADD CONSTRAINT fk_analysis 
-  FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE SET NULL;
-
--- Continue for all FK relationships...
-```
-
----
-
-### **2. Unique Constraints**
-```sql
--- One active subscription per account
-CREATE UNIQUE INDEX idx_subscriptions_active_per_account 
-ON subscriptions(account_id) 
-WHERE status = 'active';
-
--- No duplicate account members
--- (Already in table definition: UNIQUE (account_id, user_id))
-
--- No duplicate Instagram usernames
--- (Already in table definition: instagram_username text UNIQUE)
-
--- One usage summary per account per period
--- (Already in table definition: UNIQUE (account_id, period_start))
-
--- Unique account slugs
--- (Already in table definition: slug text UNIQUE)
-
--- Unique Stripe event IDs
--- (Already in table definition: stripe_event_id text PRIMARY KEY)
-
--- Unique Stripe invoice IDs
--- (Already in table definition: stripe_invoice_id text UNIQUE)
-```
-
----
-
-### **3. Check Constraints**
-```sql
--- Credit balance cannot be negative
-ALTER TABLE credit_ledger
-ADD CONSTRAINT check_balance_non_negative
-CHECK (balance_after >= 0);
-
--- AI costs cannot be negative
-ALTER TABLE ai_usage_logs
-ADD CONSTRAINT check_cost_non_negative
-CHECK (cost_cents >= 0);
-
--- Valid subscription statuses
-ALTER TABLE subscriptions
-ADD CONSTRAINT check_valid_status
-CHECK (status IN ('active', 'canceled', 'past_due', 'paused', 'pending_stripe_confirmation'));
-
--- Valid analysis statuses
-ALTER TABLE analyses
-ADD CONSTRAINT check_valid_status
-CHECK (status IN ('pending', 'processing', 'completed', 'failed'));
-
--- Valid account member roles
-ALTER TABLE account_members
-ADD CONSTRAINT check_valid_role
-CHECK (role IN ('owner', 'admin', 'member'));
-
--- Valid transaction types
-ALTER TABLE credit_ledger
-ADD CONSTRAINT check_valid_transaction_type
-CHECK (transaction_type IN ('subscription_renewal', 'analysis', 'refund', 'admin_grant', 'chargeback'));
-
--- Valid analysis types
-ALTER TABLE analyses
-ADD CONSTRAINT check_valid_analysis_type
-CHECK (analysis_type IN ('light', 'deep'));
-
--- Valid AI providers
-ALTER TABLE ai_usage_logs
-ADD CONSTRAINT check_valid_provider
-CHECK (provider IN ('openai', 'anthropic', 'apify'));
-
--- Valid AI call statuses
-ALTER TABLE ai_usage_logs
-ADD CONSTRAINT check_valid_ai_status
-CHECK (status IN ('success', 'error', 'timeout'));
-
--- Prices must be non-negative
-ALTER TABLE subscriptions
-ADD CONSTRAINT check_price_non_negative
-CHECK (price_cents >= 0);
-
-ALTER TABLE plans
-ADD CONSTRAINT check_price_non_negative
-CHECK (price_cents >= 0);
-
-ALTER TABLE plans
-ADD CONSTRAINT check_credits_non_negative
-CHECK (credits_per_month >= 0);
-```
-
----
-
-### **4. Triggers (Auto-Update Timestamps)**
+### **How It Works:**
 ```sql
 -- Generic trigger function
-CREATE OR REPLACE FUNCTION update_updated_at_column()
+CREATE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
   NEW.updated_at = NOW();
@@ -1651,263 +1630,1326 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Apply to tables with updated_at column
+-- Attach to tables
 CREATE TRIGGER update_users_updated_at
   BEFORE UPDATE ON users
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
+```
 
-CREATE TRIGGER update_accounts_updated_at
-  BEFORE UPDATE ON accounts
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+### **Usage Example:**
+```sql
+-- Manual update
+UPDATE accounts SET name = 'New Name' WHERE id = 'acc_123';
 
-CREATE TRIGGER update_business_profiles_updated_at
-  BEFORE UPDATE ON business_profiles
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_account_usage_summary_updated_at
-  BEFORE UPDATE ON account_usage_summary
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_platform_metrics_updated_at
-  BEFORE UPDATE ON platform_metrics_daily
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+-- updated_at automatically set to NOW()
+-- No application code needed
 ```
 
 ---
 
-### **5. Row-Level Security (RLS) Policies**
+## **Trigger: credit_ledger_update_balance()**
+**Purpose:** Auto-update credit_balances on every credit_ledger INSERT
+
+### **How It Works:**
+```
+1. Application calls: deduct_credits(account_id, -2, ...)
+2. Function INSERTs into credit_ledger (amount=-2, balance_after=98)
+3. Trigger fires AFTER INSERT
+4. Trigger UPSERTs into credit_balances (current_balance=98)
+5. Dashboard queries credit_balances (instant!)
+```
+
+### **Why Trigger (Not Function):**
+- ✅ Automatic (no application code can forget)
+- ✅ Consistent (always in sync with ledger)
+- ✅ Efficient (single UPSERT per transaction)
+
+---
+
+# 📋 PART 5: CONSTRAINTS & VALIDATION
+
+## **Foreign Key Constraints**
+
+### **CASCADE Rules:**
 ```sql
--- Helper function
-CREATE FUNCTION auth.user_account_ids()
-RETURNS SETOF uuid
-LANGUAGE sql
-STABLE
-AS $$
-  SELECT account_id 
-  FROM account_members 
-  WHERE user_id = auth.uid()
-$$;
+-- Child is meaningless without parent (CASCADE)
+analyses.lead_id → leads(id) ON DELETE CASCADE
+account_members.account_id → accounts(id) ON DELETE CASCADE
+account_members.user_id → users(id) ON DELETE CASCADE
+credit_balances.account_id → accounts(id) ON DELETE CASCADE
+```
 
--- Enable RLS on user-facing tables
-ALTER TABLE leads ENABLE ROW LEVEL SECURITY;
-ALTER TABLE analyses ENABLE ROW LEVEL SECURITY;
-ALTER TABLE business_profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE account_usage_summary ENABLE ROW LEVEL SECURITY;
-ALTER TABLE credit_ledger ENABLE ROW LEVEL SECURITY;
+**Why CASCADE:**
+- If lead deleted, analyses become orphaned (meaningless)
+- If account deleted, memberships become orphaned
+- Clean cascading deletion
 
--- Policies: Account-based access
-CREATE POLICY "account_access" ON leads
-FOR ALL
-USING (account_id IN (SELECT auth.user_account_ids()));
+### **SET NULL Rules:**
+```sql
+-- Preserve audit trail (SET NULL)
+credit_ledger.analysis_id → analyses(id) ON DELETE SET NULL
+credit_ledger.lead_id → leads(id) ON DELETE SET NULL
+analyses.business_profile_id → business_profiles(id) ON DELETE SET NULL
+analyses.requested_by → users(id) ON DELETE SET NULL
+```
 
-CREATE POLICY "account_access" ON analyses
-FOR ALL
-USING (account_id IN (SELECT auth.user_account_ids()));
+**Why SET NULL:**
+- Credit transaction must persist (audit requirement)
+- After lead deleted: "2 credits charged for [deleted lead]"
+- Analysis keeps result even if business profile deleted
 
-CREATE POLICY "account_access" ON business_profiles
-FOR ALL
-USING (account_id IN (SELECT auth.user_account_ids()));
+### **RESTRICT Rules:**
+```sql
+-- Prevent accidental data loss (RESTRICT)
+accounts.id ← subscriptions, credit_ledger, leads, etc.
+users(id) ← accounts.owner_id
+```
 
-CREATE POLICY "account_access" ON account_usage_summary
-FOR ALL
-USING (account_id IN (SELECT auth.user_account_ids()));
+**Why RESTRICT:**
+- Force soft delete first (UPDATE deleted_at)
+- Admin must explicitly clean up child records
+- Prevents accidental mass deletion
 
-CREATE POLICY "account_access_read_only" ON credit_ledger
-FOR SELECT
-USING (account_id IN (SELECT auth.user_account_ids()));
+---
 
--- Service role bypass (Cloudflare Worker)
-CREATE POLICY "service_role_bypass" ON leads
-FOR ALL
-USING (auth.jwt() ->> 'role' = 'service_role');
+## **Unique Constraints**
 
-CREATE POLICY "service_role_bypass" ON analyses
-FOR ALL
-USING (auth.jwt() ->> 'role' = 'service_role');
+### **Single-Column Unique:**
+```sql
+users.email UNIQUE                    -- One account per email
+accounts.slug UNIQUE                  -- Unique URLs
+webhook_events.stripe_event_id UNIQUE -- Idempotency
+stripe_invoices.stripe_invoice_id UNIQUE
+plans.id PRIMARY KEY                  -- Text primary key
+```
 
-CREATE POLICY "service_role_bypass" ON business_profiles
-FOR ALL
-USING (auth.jwt() ->> 'role' = 'service_role');
+### **Composite Unique:**
+```sql
+-- One membership per user per account
+UNIQUE (account_id, user_id) ON account_members
 
-CREATE POLICY "service_role_bypass" ON account_usage_summary
-FOR ALL
-USING (auth.jwt() ->> 'role' = 'service_role');
+-- One summary per account per month
+UNIQUE (account_id, period_start) ON account_usage_summary
 
-CREATE POLICY "service_role_bypass" ON credit_ledger
-FOR ALL
-USING (auth.jwt() ->> 'role' = 'service_role');
+-- Same Instagram username allowed for different businesses
+UNIQUE (account_id, business_profile_id, instagram_username) ON leads
+```
+
+### **Conditional Unique (Partial Index):**
+```sql
+-- Only ONE active subscription per account
+CREATE UNIQUE INDEX idx_one_active_subscription
+ON subscriptions(account_id)
+WHERE status = 'active';
+
+-- Explanation: User can have multiple subscriptions (history)
+-- But only ONE can be status='active' at a time
 ```
 
 ---
 
-### **6. Core Indexes**
+## **Check Constraints**
+
+### **Credit & Money Validation:**
 ```sql
--- (Already listed in decision #15 above)
-CREATE UNIQUE INDEX idx_webhook_stripe_id ON webhook_events(stripe_event_id);
-CREATE INDEX idx_leads_active ON leads(account_id, last_analyzed_at DESC) WHERE deleted_at IS NULL;
-CREATE INDEX idx_analyses_latest ON analyses(lead_id, completed_at DESC) WHERE deleted_at IS NULL;
-CREATE INDEX idx_analyses_in_progress ON analyses(lead_id, status) WHERE status IN ('pending', 'processing') AND deleted_at IS NULL;
-CREATE INDEX idx_credit_ledger_account ON credit_ledger(account_id, created_at DESC);
-CREATE INDEX idx_subscriptions_active ON subscriptions(account_id, status) WHERE status = 'active';
-CREATE INDEX idx_account_members_user ON account_members(user_id, account_id);
-CREATE INDEX idx_ai_usage_account ON ai_usage_logs(account_id, created_at DESC);
-CREATE INDEX idx_platform_metrics_date ON platform_metrics_daily(metric_date DESC);
-CREATE INDEX idx_account_usage ON account_usage_summary(account_id, period_start DESC);
+-- Balances cannot be negative
+CHECK (credit_balances.current_balance >= 0)
+CHECK (credit_ledger.balance_after >= 0)
+
+-- Costs cannot be negative
+CHECK (ai_usage_logs.cost_cents >= 0)
+CHECK (plans.price_cents >= 0)
+CHECK (plans.credits_per_month >= 0)
+CHECK (subscriptions.price_cents >= 0)
+```
+
+### **Enum-Style Validation:**
+```sql
+-- Valid subscription statuses
+CHECK (subscriptions.status IN (
+  'active', 
+  'canceled', 
+  'past_due', 
+  'paused', 
+  'pending_stripe_confirmation'
+))
+
+-- Valid analysis statuses
+CHECK (analyses.status IN (
+  'pending', 
+  'processing', 
+  'completed', 
+  'failed'
+))
+
+-- Valid account member roles
+CHECK (account_members.role IN (
+  'owner', 
+  'admin', 
+  'member', 
+  'viewer'
+))
+
+-- Valid transaction types
+CHECK (credit_ledger.transaction_type IN (
+  'subscription_renewal',
+  'analysis',
+  'refund',
+  'admin_grant',
+  'chargeback',
+  'signup_bonus'
+))
+
+-- Valid analysis types
+CHECK (analyses.analysis_type IN ('light', 'deep'))
+
+-- Valid AI providers
+CHECK (ai_usage_logs.provider IN ('openai', 'anthropic', 'apify'))
+
+-- Valid AI call statuses
+CHECK (ai_usage_logs.status IN ('success', 'error', 'timeout'))
+
+-- Valid invoice statuses
+CHECK (stripe_invoices.status IN ('paid', 'open', 'void', 'uncollectible'))
+```
+
+### **Why Check Constraints:**
+- ✅ Database enforces validity (no invalid states possible)
+- ✅ Application bugs can't corrupt data
+- ✅ Clear error messages (constraint violation)
+- ✅ Documentation (constraints = valid values)
+
+---
+
+## **Not Null Constraints**
+
+### **Critical Fields That Must Exist:**
+```sql
+-- Identity
+users.email NOT NULL
+users.id NOT NULL (implicit PRIMARY KEY)
+
+-- Accounts
+accounts.owner_id NOT NULL
+accounts.name NOT NULL
+
+-- Billing
+subscriptions.account_id NOT NULL
+subscriptions.plan_type NOT NULL
+subscriptions.current_period_start NOT NULL
+subscriptions.current_period_end NOT NULL
+credit_ledger.account_id NOT NULL
+credit_ledger.amount NOT NULL
+credit_ledger.balance_after NOT NULL
+
+-- Business Logic
+leads.account_id NOT NULL
+leads.instagram_username NOT NULL
+analyses.lead_id NOT NULL
+analyses.account_id NOT NULL
+analyses.analysis_type NOT NULL
+
+-- Audit
+ai_usage_logs.provider NOT NULL
+ai_usage_logs.cost_cents NOT NULL
+```
+
+### **Nullable Fields (By Design):**
+```sql
+-- Optional user info
+users.full_name NULL
+users.signature_name NULL
+users.avatar_url NULL
+
+-- Stripe IDs (filled after webhook)
+subscriptions.stripe_customer_id NULL  -- Until Stripe confirms
+subscriptions.stripe_subscription_id NULL  -- NULL for free plan
+
+-- Optional lead metadata
+leads.display_name NULL  -- Profile might not have one
+leads.bio NULL
+leads.external_url NULL
+
+-- Analysis results (populated after completion)
+analyses.ai_response NULL  -- Until analysis completes
+analyses.overall_score NULL
+analyses.completed_at NULL  -- NULL while pending
 ```
 
 ---
 
-## **🔧 PHASE 2: FIRST WEEK LIVE (Performance Optimization)**
+# 📋 PART 6: SIGNUP & ONBOARDING FLOW
 
-### **7. Materialized Credit Balance Table**
-```sql
-CREATE TABLE credit_balances (
-  account_id uuid PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
-  current_balance integer NOT NULL,
-  last_transaction_at timestamptz,
-  updated_at timestamptz DEFAULT NOW()
-);
+## **Complete Signup Flow (Step-by-Step)**
 
--- Trigger to update on every credit_ledger INSERT
-CREATE FUNCTION update_credit_balance()
-RETURNS TRIGGER AS $$
-BEGIN
-  INSERT INTO credit_balances (account_id, current_balance, last_transaction_at)
-  VALUES (NEW.account_id, NEW.balance_after, NOW())
-  ON CONFLICT (account_id)
-  DO UPDATE SET
-    current_balance = NEW.balance_after,
-    last_transaction_at = NOW(),
-    updated_at = NOW();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER credit_ledger_update_balance
-  AFTER INSERT ON credit_ledger
-  FOR EACH ROW
-  EXECUTE FUNCTION update_credit_balance();
-
--- Backfill existing balances
-INSERT INTO credit_balances (account_id, current_balance, last_transaction_at)
-SELECT 
-  account_id,
-  SUM(amount) as current_balance,
-  MAX(created_at) as last_transaction_at
-FROM credit_ledger
-GROUP BY account_id
-ON CONFLICT (account_id) DO NOTHING;
-```
-
-**Query Pattern (Fast):**
-```sql
--- Old way (slow at scale)
-SELECT SUM(amount) FROM credit_ledger WHERE account_id = 'acc_123';
-
--- New way (instant)
-SELECT current_balance FROM credit_balances WHERE account_id = 'acc_123';
-```
-
----
-
-### **8. Daily Cleanup Cron Job**
+### **Frontend (Supabase Auth):**
 ```javascript
-// Cloudflare Worker scheduled job (runs daily at 2 AM UTC)
-export async function scheduledCleanup() {
-  
-  // 1. Archive old ai_usage_logs (older than 90 days)
-  await db.query(`
-    DELETE FROM ai_usage_logs 
-    WHERE created_at < NOW() - INTERVAL '90 days'
-  `);
-  
-  // 2. Hard-delete soft-deleted records (older than 30 days)
-  await db.query(`
-    DELETE FROM leads 
-    WHERE deleted_at < NOW() - INTERVAL '30 days'
-  `);
-  
-  await db.query(`
-    DELETE FROM analyses 
-    WHERE deleted_at < NOW() - INTERVAL '30 days'
-  `);
-  
-  await db.query(`
-    DELETE FROM business_profiles 
-    WHERE deleted_at < NOW() - INTERVAL '30 days'
-  `);
-  
-  await db.query(`
-    DELETE FROM accounts 
-    WHERE deleted_at < NOW() - INTERVAL '30 days'
-  `);
-  
-  console.log('Daily cleanup completed');
+// Step 1: User fills signup form
+const { data, error } = await supabase.auth.signUp({
+  email: 'user@example.com',
+  password: 'SecurePass123!',
+  options: {
+    data: { 
+      full_name: 'Hamza Williams'  // Stored in auth.users metadata
+    }
+  }
+});
+
+if (error) {
+  // Show error: "Email already registered", "Weak password", etc.
+  return;
+}
+
+// Step 2: Call backend to complete setup
+const response = await fetch('/api/auth/complete-signup', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    userId: data.user.id,
+    email: data.user.email,
+    fullName: data.user.user_metadata.full_name
+  })
+});
+
+const result = await response.json();
+
+// Step 3: Redirect to onboarding
+if (result.success) {
+  window.location.href = `/accounts/${result.account.slug}/onboarding`;
 }
 ```
 
----
-
-### **9. Monthly Rollup Cron Job**
+### **Backend (Cloudflare Worker - POST /api/auth/complete-signup):**
 ```javascript
-// Cloudflare Worker scheduled job (runs 1st of month at 3 AM UTC)
-export async function monthlyRollup() {
+export async function completeSignup(c) {
+  const { userId, email, fullName } = await c.req.json();
   
-  // 1. Freeze last month's usage summaries
-  await db.query(`
-    UPDATE account_usage_summary
-    SET is_finalized = true
-    WHERE period_end = DATE_TRUNC('month', NOW())
-      AND is_finalized = false
-  `);
-  
-  // 2. Grant free plan monthly credits
-  const freeAccounts = await db.query(`
-    SELECT a.id as account_id, p.credits_per_month
-    FROM accounts a
-    JOIN subscriptions s ON s.account_id = a.id
-    JOIN plans p ON p.id = s.plan_type
-    WHERE s.status = 'active'
-      AND p.id = 'free'
-      AND a.deleted_at IS NULL
-  `);
-  
-  for (const account of freeAccounts.rows) {
-    const currentBalance = await db.query(`
-      SELECT current_balance 
-      FROM credit_balances 
-      WHERE account_id = $1
-    `, [account.account_id]);
+  try {
+    // 1. Create Stripe customer (optimistic)
+    const customer = await stripe.customers.create({
+      email,
+      name: fullName,
+      metadata: { 
+        user_id: userId,
+        source: 'oslira_signup'
+      }
+    });
     
-    const newBalance = currentBalance.rows[0].current_balance + account.credits_per_month;
+    // 2. Generate unique slug
+    const slug = await db.rpc('generate_slug', { 
+      input_text: fullName 
+    });
+    // "Hamza Williams" → "hamza-williams"
+    
+    // 3. Create account
+    const account = await db.query(`
+      INSERT INTO accounts (owner_id, name, slug)
+      VALUES ($1, $2, $3)
+      RETURNING id
+    `, [userId, `${fullName}'s Account`, slug]);
+    
+    const accountId = account.rows[0].id;
+    
+    // 4. Add user to account_members (owner role)
+    await db.query(`
+      INSERT INTO account_members (account_id, user_id, role)
+      VALUES ($1, $2, 'owner')
+    `, [accountId, userId]);
+    
+    // 5. Create free subscription
+    const periodStart = new Date();
+    const periodEnd = new Date(Date.now() + 30*24*60*60*1000); // 30 days
     
     await db.query(`
-      INSERT INTO credit_ledger (
+      INSERT INTO subscriptions (
         account_id, 
-        amount, 
-        balance_after, 
-        transaction_type,
-        description
-      ) VALUES ($1, $2, $3, 'subscription_renewal', 'Monthly free plan credit grant')
-    `, [account.account_id, account.credits_per_month, newBalance]);
+        plan_type, 
+        price_cents,
+        stripe_customer_id, 
+        stripe_subscription_id,  -- NULL for free
+        status,
+        current_period_start,
+        current_period_end
+      ) VALUES ($1, 'free', 0, $2, NULL, 'active', $3, $4)
+    `, [accountId, customer.id, periodStart, periodEnd]);
+    
+    // 6. Grant 25 welcome credits (optimistic)
+    await db.rpc('deduct_credits', {
+      p_account_id: accountId,
+      p_amount: 25,  // Positive = grant
+      p_transaction_type: 'signup_bonus',
+      p_description: 'Welcome to Oslira!'
+    });
+    
+    // 7. Initialize usage summary for current month
+    const now = new Date();
+    await db.query(`
+      INSERT INTO account_usage_summary (
+        account_id,
+        period_start,
+        period_end
+      ) VALUES ($1, $2, $3)
+    `, [
+      accountId,
+      new Date(now.getFullYear(), now.getMonth(), 1),  // 1st of month
+      new Date(now.getFullYear(), now.getMonth() + 1, 0)  // Last day of month
+    ]);
+    
+    return c.json({
+      success: true,
+      account: {
+        id: accountId,
+        slug,
+        credits: 25
+      },
+      stripe_customer_id: customer.id
+    });
+    
+  } catch (error) {
+    console.error('Signup failed:', error);
+    return c.json({ 
+      success: false, 
+      error: error.message 
+    }, 500);
   }
+}
+```
+
+### **What Happens After Signup:**
+```
+✅ User can immediately use the app (25 credits available)
+✅ URL: app.oslira.com/accounts/hamza-williams/dashboard
+✅ Stripe customer created (for future upgrades)
+✅ Free subscription active
+✅ Monthly cron will renew credits on 1st of next month
+
+Background (async):
+  - Stripe webhook confirms customer.created
+  - No action needed (already have stripe_customer_id)
+```
+
+---
+
+## **Business Profile Onboarding (After Signup)**
+
+### **URL:** `/accounts/{slug}/onboarding`
+
+### **Flow:**
+```
+Step 1: Welcome Screen
+  → "Let's set up your first business profile"
   
-  console.log('Monthly rollup completed');
+Step 2: Basic Info
+  → Business Name (e.g., "Oslira Marketing")
+  → Website (e.g., "oslira.com")
+  → One-liner (e.g., "We write copy that sells")
+  
+Step 3: Business Context (15+ fields)
+  → Niche (e.g., "B2B SaaS copywriting")
+  → Target Audience (e.g., "Tech founders, marketing managers")
+  → Value Proposition (e.g., "Conversion-focused copy")
+  → Problems Solved (e.g., "Low conversion rates, generic messaging")
+  → Unique Approach (e.g., "Data-driven storytelling")
+  → Ideal Client Traits (e.g., "Fast-growing startups")
+  → Service Offerings (e.g., "Landing pages, email sequences")
+  → Tone of Voice (e.g., "Professional yet approachable")
+  → Competitors (e.g., "Agency X, Freelancer Y")
+  → Geographic Focus (e.g., "North America")
+  
+Step 4: AI Processing
+  → "Generating your business context..."
+  → AI creates business_context_pack JSON
+  → Stored in business_profiles.business_context_pack
+  
+Step 5: Complete
+  → Redirect to: /accounts/{slug}/dashboard
+  → Ready to analyze leads!
+```
+
+### **Backend (POST /api/business-profiles):**
+```javascript
+export async function createBusinessProfile(c) {
+  const { accountId, formData } = await c.req.json();
+  
+  // 1. Validate user has access to account
+  const hasAccess = await checkAccountAccess(c, accountId);
+  if (!hasAccess) return c.json({ error: 'Unauthorized' }, 403);
+  
+  // 2. Generate AI context pack
+  const contextPack = await generateBusinessContext(formData);
+  // Uses OpenAI/Claude to structure the data
+  
+  // 3. Insert business profile
+  const profile = await db.query(`
+    INSERT INTO business_profiles (
+      account_id,
+      business_name,
+      website,
+      business_one_liner,
+      business_context_pack,
+      context_version,
+      context_generated_at
+    ) VALUES ($1, $2, $3, $4, $5, 'v1.0', NOW())
+    RETURNING id
+  `, [
+    accountId,
+    formData.businessName,
+    formData.website,
+    formData.oneLiner,
+    contextPack
+  ]);
+  
+  return c.json({
+    success: true,
+    profileId: profile.rows[0].id
+  });
 }
 ```
 
 ---
 
-## **📝 CRITICAL IMPLEMENTATION NOTES**
+# 📋 PART 7: STRIPE WEBHOOK HANDLERS
 
-### **Data Type Warnings**
+## **Webhook Endpoint:** `POST /webhooks/stripe`
+
+### **Handler Pattern:**
+```javascript
+export async function handleStripeWebhook(c) {
+  const signature = c.req.header('stripe-signature');
+  const body = await c.req.text();
+  
+  // 1. Verify signature (security)
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(
+      body,
+      signature,
+      STRIPE_WEBHOOK_SECRET
+    );
+  } catch (error) {
+    return c.json({ error: 'Invalid signature' }, 400);
+  }
+  
+  // 2. Check idempotency (prevent duplicate processing)
+  const existing = await db.query(
+    'SELECT 1 FROM webhook_events WHERE stripe_event_id = $1',
+    [event.id]
+  );
+  
+  if (existing.rows.length > 0) {
+    return c.json({ received: true, message: 'already_processed' });
+  }
+  
+  // 3. Process event based on type
+  switch (event.type) {
+    case 'invoice.paid':
+      await handleInvoicePaid(event.data.object);
+      break;
+      
+    case 'invoice.payment_failed':
+      await handleInvoiceFailed(event.data.object);
+      break;
+      
+    case 'customer.subscription.created':
+      await handleSubscriptionCreated(event.data.object);
+      break;
+      
+    case 'customer.subscription.updated':
+      await handleSubscriptionUpdated(event.data.object);
+      break;
+      
+    case 'customer.subscription.deleted':
+      await handleSubscriptionDeleted(event.data.object);
+      break;
+  }
+  
+  // 4. Record event (idempotency)
+  await db.query(`
+    INSERT INTO webhook_events (
+      stripe_event_id,
+      event_type,
+      processed_at,
+      payload
+    ) VALUES ($1, $2, NOW(), $3)
+  `, [event.id, event.type, event]);
+  
+  return c.json({ received: true });
+}
+```
+
+---
+
+## **Handler: invoice.paid**
+```javascript
+async function handleInvoicePaid(invoice) {
+  // 1. Find account from Stripe customer ID
+  const account = await db.query(`
+    SELECT account_id FROM subscriptions 
+    WHERE stripe_customer_id = $1 
+    LIMIT 1
+  `, [invoice.customer]);
+  
+  if (!account.rows.length) {
+    console.error('No account found for customer:', invoice.customer);
+    return;
+  }
+  
+  const accountId = account.rows[0].account_id;
+  
+  // 2. Store invoice record
+  await db.query(`
+    INSERT INTO stripe_invoices (
+      account_id,
+      stripe_invoice_id,
+      stripe_subscription_id,
+      amount_cents,
+      status,
+      paid_at
+    ) VALUES ($1, $2, $3, $4, 'paid', $5)
+    ON CONFLICT (stripe_invoice_id) DO NOTHING
+  `, [
+    accountId,
+    invoice.id,
+    invoice.subscription,
+    invoice.amount_paid,
+    new Date(invoice.status_transitions.paid_at * 1000)
+  ]);
+  
+  // 3. Credits already granted by Stripe subscription webhook
+  // (This is just for invoice tracking)
+  
+  console.log('Invoice recorded:', invoice.id);
+}
+```
+
+---
+
+## **Handler: invoice.payment_failed**
+```javascript
+async function handleInvoiceFailed(invoice) {
+  // 1. Find account
+  const account = await db.query(`
+    SELECT account_id FROM subscriptions 
+    WHERE stripe_customer_id = $1 
+    LIMIT 1
+  `, [invoice.customer]);
+  
+  if (!account.rows.length) return;
+  
+  const accountId = account.rows[0].account_id;
+  
+  // 2. Store failed invoice
+  await db.query(`
+    INSERT INTO stripe_invoices (
+      account_id,
+      stripe_invoice_id,
+      amount_cents,
+      status,
+      failed_at,
+      failure_reason
+    ) VALUES ($1, $2, $3, 'uncollectible', NOW(), $4)
+    ON CONFLICT (stripe_invoice_id) DO NOTHING
+  `, [
+    accountId,
+    invoice.id,
+    invoice.amount_due,
+    invoice.last_finalization_error?.message || 'Payment failed'
+  ]);
+  
+  // 3. Update subscription status
+  await db.query(`
+    UPDATE subscriptions
+    SET status = 'past_due'
+    WHERE stripe_customer_id = $1
+      AND status = 'active'
+  `, [invoice.customer]);
+  
+  // 4. Send email notification (optional)
+  // await sendPaymentFailedEmail(accountId);
+  
+  console.log('Payment failed for:', invoice.customer);
+}
+```
+
+---
+
+## **Handler: customer.subscription.created**
+```javascript
+async function handleSubscriptionCreated(subscription) {
+  // This fires when user upgrades from free to paid
+  
+  // 1. Find pending subscription
+  const existing = await db.query(`
+    SELECT id FROM subscriptions
+    WHERE stripe_customer_id = $1
+      AND status = 'pending_stripe_confirmation'
+    LIMIT 1
+  `, [subscription.customer]);
+  
+  if (existing.rows.length > 0) {
+    // 2. Update with Stripe subscription ID
+    await db.query(`
+      UPDATE subscriptions
+      SET stripe_subscription_id = $1,
+          stripe_price_id = $2,
+          status = 'active'
+      WHERE id = $3
+    `, [
+      subscription.id,
+      subscription.items.data[0].price.id,
+      existing.rows[0].id
+    ]);
+  } else {
+    // 3. Create new subscription (user upgraded via Stripe dashboard)
+    const account = await db.query(`
+      SELECT account_id FROM subscriptions
+      WHERE stripe_customer_id = $1
+      LIMIT 1
+    `, [subscription.customer]);
+    
+    if (!account.rows.length) return;
+    
+    await db.query(`
+      INSERT INTO subscriptions (
+        account_id,
+        plan_type,
+        price_cents,
+        stripe_customer_id,
+        stripe_subscription_id,
+        stripe_price_id,
+        status,
+        current_period_start,
+        current_period_end
+      ) VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8)
+    `, [
+      account.rows[0].account_id,
+      getPlanTypeFromPrice(subscription.items.data[0].price.id),
+      subscription.items.data[0].price.unit_amount,
+      subscription.customer,
+      subscription.id,
+      subscription.items.data[0].price.id,
+      new Date(subscription.current_period_start * 1000),
+      new Date(subscription.current_period_end * 1000)
+    ]);
+  }
+  
+  console.log('Subscription created:', subscription.id);
+}
+```
+
+---
+
+## **Handler: customer.subscription.updated**
+```javascript
+async function handleSubscriptionUpdated(subscription) {
+  // Update subscription status (active, past_due, canceled, etc.)
+  
+  await db.query(`
+    UPDATE subscriptions
+    SET status = $1,
+        current_period_start = $2,
+        current_period_end = $3,
+        canceled_at = $4
+    WHERE stripe_subscription_id = $5
+  `, [
+    subscription.status,
+    new Date(subscription.current_period_start * 1000),
+    new Date(subscription.current_period_end * 1000),
+    subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : null,
+    subscription.id
+  ]);
+  
+  console.log('Subscription updated:', subscription.id, subscription.status);
+}
+```
+
+---
+
+## **Handler: customer.subscription.deleted**
+```javascript
+async function handleSubscriptionDeleted(subscription) {
+  // Subscription ended (canceled or payment failed repeatedly)
+  
+  await db.query(`
+    UPDATE subscriptions
+    SET status = 'canceled',
+        canceled_at = NOW()
+    WHERE stripe_subscription_id = $1
+  `, [subscription.id]);
+  
+  // User keeps existing credits (they don't expire)
+  // Just won't get monthly renewals anymore
+  
+  console.log('Subscription deleted:', subscription.id);
+}
+```
+
+---
+
+# 📋 PART 8: CRON JOBS
+
+## **Daily Cleanup Job** (2 AM UTC)
+
+### **Purpose:**
+- Delete AI usage logs older than 90 days
+- Hard-delete soft-deleted records older than 30 days
+- Prevent database bloat
+
+### **Cloudflare Worker Cron:**
+```javascript
+// wrangler.toml
+[triggers]
+crons = ["0 2 * * *"]  // Daily at 2 AM UTC
+
+// src/cron/daily-cleanup.js
+export async function dailyCleanup(env) {
+  const db = getDatabase(env);
+  
+  try {
+    // 1. Delete old AI logs (90 days)
+    const aiLogsResult = await db.query(`
+      DELETE FROM ai_usage_logs 
+      WHERE created_at < NOW() - INTERVAL '90 days'
+    `);
+    console.log(`Deleted ${aiLogsResult.rowCount} AI logs`);
+    
+    // 2. Hard-delete old leads (30 days soft-deleted)
+    const leadsResult = await db.query(`
+      DELETE FROM leads 
+      WHERE deleted_at < NOW() - INTERVAL '30 days'
+    `);
+    console.log(`Hard-deleted ${leadsResult.rowCount} leads`);
+    // Note: Analyses CASCADE deleted automatically
+    
+    // 3. Hard-delete old business profiles (30 days)
+    const profilesResult = await db.query(`
+      DELETE FROM business_profiles 
+      WHERE deleted_at < NOW() - INTERVAL '30 days'
+    `);
+    console.log(`Hard-deleted ${profilesResult.rowCount} profiles`);
+    
+    // 4. Hard-delete old accounts (30 days)
+    const accountsResult = await db.query(`
+      DELETE FROM accounts 
+      WHERE deleted_at < NOW() - INTERVAL '30 days'
+    `);
+    console.log(`Hard-deleted ${accountsResult.rowCount} accounts`);
+    
+    return {
+      success: true,
+      deleted: {
+        aiLogs: aiLogsResult.rowCount,
+        leads: leadsResult.rowCount,
+        profiles: profilesResult.rowCount,
+        accounts: accountsResult.rowCount
+      }
+    };
+    
+  } catch (error) {
+    console.error('Daily cleanup failed:', error);
+    throw error;
+  }
+}
+```
+
+---
+
+## **Monthly Rollup Job** (1st of month, 3 AM UTC)
+
+### **Purpose:**
+- Finalize previous month's usage summaries
+- Grant monthly credits to all active subscriptions
+- Generate monthly platform metrics
+
+### **Cloudflare Worker Cron:**
+```javascript
+// wrangler.toml
+[triggers]
+crons = ["0 3 1 * *"]  // 1st of month at 3 AM UTC
+
+// src/cron/monthly-rollup.js
+export async function monthlyRollup(env) {
+  const db = getDatabase(env);
+  
+  try {
+    // 1. Finalize last month's usage summaries
+    const lastMonthEnd = new Date();
+    lastMonthEnd.setDate(0); // Last day of previous month
+    
+    await db.query(`
+      UPDATE account_usage_summary
+      SET is_finalized = true
+      WHERE period_end = $1
+        AND is_finalized = false
+    `, [lastMonthEnd.toISOString().split('T')[0]]);
+    
+    console.log('Finalized last month summaries');
+    
+    // 2. Get all renewable subscriptions
+    const subscriptions = await db.rpc('get_renewable_subscriptions');
+    
+    console.log(`Found ${subscriptions.length} subscriptions to renew`);
+    
+    // 3. Grant credits to each subscription
+    let renewedCount = 0;
+    
+    for (const sub of subscriptions) {
+      try {
+        // Grant credits
+        await db.rpc('deduct_credits', {
+          p_account_id: sub.account_id,
+          p_amount: sub.credits_per_month,  // Positive = grant
+          p_transaction_type: 'subscription_renewal',
+          p_description: `Monthly ${sub.plan_type} renewal`,
+          p_metadata: {
+            subscription_id: sub.id,
+            plan_type: sub.plan_type
+          }
+        });
+        
+        // Update subscription period
+        const newPeriodEnd = new Date(sub.current_period_end);
+        newPeriodEnd.setMonth(newPeriodEnd.getMonth() + 1);
+        
+        await db.query(`
+          UPDATE subscriptions
+          SET current_period_start = $1,
+              current_period_end = $2
+          WHERE id = $3
+        `, [sub.current_period_end, newPeriodEnd, sub.id]);
+        
+        renewedCount++;
+        
+      } catch (error) {
+        console.error(`Failed to renew ${sub.id}:`, error);
+        // Continue with other subscriptions
+      }
+    }
+    
+    console.log(`Renewed ${renewedCount} subscriptions`);
+    
+    return {
+      success: true,
+      renewed: renewedCount
+    };
+    
+  } catch (error) {
+    console.error('Monthly rollup failed:', error);
+    throw error;
+  }
+}
+```
+
+---
+
+# 📋 PART 9: IMPLEMENTATION CHECKLIST
+
+## **Phase 1: Database Setup** (Day 1)
+
+### **Step 1: Create Supabase Project**
+- [ ] Go to https://supabase.com/dashboard
+- [ ] Click "New Project"
+- [ ] Name: "oslira-production"
+- [ ] Choose region (closest to users)
+- [ ] Save project URL and keys:
+  - Project URL: `https://xxx.supabase.co`
+  - `anon` key (for client)
+  - `service_role` key (for Worker)
+
+### **Step 2: Execute Schema SQL** (3 separate files)
+- [ ] File 1: **01-create-tables.sql** (all CREATE TABLE statements)
+- [ ] File 2: **02-add-constraints-indexes-functions-triggers.sql** (everything else except RLS)
+- [ ] File 3: **03-enable-rls.sql** (all RLS policies)
+
+Run in Supabase SQL Editor in this exact order.
+
+### **Step 3: Preseed Data**
+- [ ] File 4: **04-preseed.sql** (INSERT plans data)
+
+### **Step 4: Verify Deployment**
 ```sql
--- ❌ WRONG (will break Stripe integration)
+-- Check all 15 tables created
+SELECT table_name 
+FROM information_schema.tables 
+WHERE table_schema = 'public'
+ORDER BY table_name;
+
+-- Verify plans inserted
+SELECT * FROM plans;
+
+-- Verify functions exist
+SELECT routine_name 
+FROM information_schema.routines 
+WHERE routine_schema = 'public';
+```
+
+---
+
+## **Phase 2: AWS Secrets Manager** (Day 1)
+
+### **Step 1: Create IAM User**
+- [ ] AWS Console → IAM → Users → Create User
+- [ ] Name: `oslira-worker`
+- [ ] Permissions: `SecretsManagerReadWrite`
+- [ ] Save: Access Key ID + Secret Access Key
+
+### **Step 2: Store Secrets**
+```bash
+aws secretsmanager create-secret \
+  --name oslira/production \
+  --secret-string '{
+    "SUPABASE_URL": "https://xxx.supabase.co",
+    "SUPABASE_SERVICE_ROLE": "eyJhbGc...",
+    "STRIPE_SECRET_KEY": "sk_live_...",
+    "STRIPE_WEBHOOK_SECRET": "whsec_...",
+    "OPENAI_API_KEY": "sk-...",
+    "ANTHROPIC_API_KEY": "sk-ant-...",
+    "APIFY_API_KEY": "apify_api_..."
+  }'
+```
+
+---
+
+## **Phase 3: Stripe Setup** (Day 1-2)
+
+### **Step 1: Create Products**
+- [ ] Go to https://dashboard.stripe.com/products
+- [ ] Create "Pro Plan": $30/month → Copy price ID
+- [ ] Create "Agency Plan": $80/month → Copy price ID
+- [ ] Create "Enterprise Plan": $300/month → Copy price ID
+
+### **Step 2: Update Plans Table**
+```sql
+UPDATE plans SET stripe_price_id = 'price_xxx' WHERE id = 'pro';
+UPDATE plans SET stripe_price_id = 'price_yyy' WHERE id = 'agency';
+UPDATE plans SET stripe_price_id = 'price_zzz' WHERE id = 'enterprise';
+```
+
+### **Step 3: Create Webhook**
+- [ ] Go to https://dashboard.stripe.com/webhooks
+- [ ] Add endpoint: `https://api.oslira.com/webhooks/stripe`
+- [ ] Select events:
+  - `invoice.paid`
+  - `invoice.payment_failed`
+  - `customer.subscription.created`
+  - `customer.subscription.updated`
+  - `customer.subscription.deleted`
+- [ ] Copy webhook signing secret
+- [ ] Update AWS secret with webhook secret
+
+---
+
+## **Phase 4: Cloudflare Worker Deploy** (Day 2)
+
+### **Step 1: Configure wrangler.toml**
+```toml
+name = "oslira-worker"
+main = "src/index.ts"
+
+[vars]
+APP_ENV = "production"
+AWS_REGION = "us-east-1"
+
+[triggers]
+crons = [
+  "0 2 * * *",    # Daily cleanup
+  "0 3 1 * *"     # Monthly rollup
+]
+```
+
+### **Step 2: Add AWS Credentials**
+```bash
+npx wrangler secret put AWS_ACCESS_KEY_ID
+# Paste: (from IAM user)
+
+npx wrangler secret put AWS_SECRET_ACCESS_KEY
+# Paste: (from IAM user)
+```
+
+### **Step 3: Deploy**
+```bash
+npm install
+npm run build
+npx wrangler deploy
+```
+
+---
+
+## **Phase 5: First Admin User** (Day 2)
+
+### **Step 1: Sign Up**
+- [ ] Go to app.oslira.com/signup
+- [ ] Complete signup with your email
+- [ ] Verify email
+
+### **Step 2: Grant Admin**
+```sql
+-- In Supabase SQL Editor
+SELECT id, email FROM auth.users WHERE email = 'your-email@example.com';
+
+UPDATE users 
+SET is_admin = true 
+WHERE id = 'paste-uuid-here';
+```
+
+---
+
+## **Phase 6: Smoke Tests** (Day 2-3)
+
+### **Test 1: Signup Flow**
+- [ ] Sign up new test user
+- [ ] Verify account created
+- [ ] Verify 25 credits granted
+- [ ] Verify free subscription active
+
+### **Test 2: Credit Deduction**
+- [ ] Trigger analysis as test user
+- [ ] Verify credits deducted (25 → 23)
+- [ ] Verify credit_ledger row created
+- [ ] Verify credit_balances updated
+
+### **Test 3: RLS Policies**
+```sql
+-- Login as test user (non-admin)
+SET request.jwt.claims.sub = 'test-user-uuid';
+
+-- Try to see all accounts
+SELECT * FROM accounts;
+-- Should return ONLY test user's account
+
+-- Try to see admin's leads
+SELECT * FROM leads WHERE account_id = 'admin-account-uuid';
+-- Should return EMPTY
+```
+
+### **Test 4: Webhook Processing**
+- [ ] Trigger test webhook from Stripe dashboard
+- [ ] Check Cloudflare Worker logs
+- [ ] Verify webhook_events row created
+- [ ] Verify no duplicate processing on retry
+
+### **Test 5: Cron Jobs**
+```bash
+# Manually trigger daily cleanup
+curl -X POST https://api.oslira.com/__scheduled \
+  -H "Content-Type: application/json" \
+  -d '{"cron": "0 2 * * *"}'
+
+# Check logs for success
+```
+
+---
+
+# 📋 PART 10: QUERIES FOR APPLICATION CODE
+
+## **Common Queries Your Application Will Need**
+
+### **Get User's Accounts**
+```sql
+-- Returns all accounts user belongs to
+SELECT 
+  a.id,
+  a.name,
+  a.slug,
+  am.role,
+  cb.current_balance as credits
+FROM accounts a
+JOIN account_members am ON am.account_id = a.id
+LEFT JOIN credit_balances cb ON cb.account_id = a.id
+WHERE am.user_id = $1
+  AND a.deleted_at IS NULL
+  AND a.is_suspended = false
+ORDER BY a.created_at DESC;
+```
+
+### **Get Account Details with Subscription**
+```sql
+SELECT 
+  a.*,
+  s.plan_type,
+  s.status as subscription_status,
+  s.current_period_end,
+  cb.current_balance as credits,
+  p.credits_per_month
+FROM accounts a
+LEFT JOIN subscriptions s ON s.account_id = a.id AND s.status = 'active'
+LEFT JOIN plans p ON p.id = s.plan_type
+LEFT JOIN credit_balances cb ON cb.account_id = a.id
+WHERE a.id = $1
+  AND a.deleted_at IS NULL;
+```
+
+### **Get Business Profiles for Account**
+```sql
+SELECT *
+FROM business_profiles
+WHERE account_id = $1
+  AND deleted_at IS NULL
+ORDER BY created_at DESC;
+```
+
+### **Get Leads for Business Profile (with Latest Analysis)**
+```sql
+SELECT 
+  l.*,
+  a.id as latest_analysis_id,
+  a.overall_score,
+  a.niche_fit_score,
+  a.completed_at as last_analyzed
+FROM leads l
+LEFT JOIN LATERAL (
+  SELECT id, overall_score, niche_fit_score, completed_at
+  FROM analyses
+  WHERE lead_id = l.id
+    AND status = 'completed'
+    AND deleted_at IS NULL
+  ORDER BY completed_at DESC
+  LIMIT 1
+) a ON true
+WHERE l.business_profile_id = $1
+  AND l.deleted_at IS NULL
+ORDER BY l.last_analyzed_at DESC NULLS LAST;
+```
+
+### **Check if Analysis Already In Progress**
+```sql
+-- Before creating new analysis
+SELECT id, status
+FROM analyses
+WHERE lead_id = $1
+  AND status IN ('pending', 'processing')
+  AND deleted_at IS NULL
+LIMIT 1;
+
+-- If rows returned: show error "Analysis already in progress"
+```
+
+### **Get Credit Transaction History**
+```sql
+SELECT 
+  cl.*,
+  u.full_name as created_by_name
+FROM credit_ledger cl
+LEFT JOIN users u ON u.id = cl.created_by
+WHERE cl.account_id = $1
+ORDER BY cl.created_at DESC
+LIMIT 50;
+```
+
+### **Get Monthly Usage Stats**
+```sql
+SELECT *
+FROM account_usage_summary
+WHERE account_id = $1
+ORDER BY period_start DESC
+LIMIT 12;  -- Last 12 months
+```
+
+### **Get Platform Metrics (Admin Only)**
+```sql
+SELECT *
+FROM platform_metrics_daily
+ORDER BY metric_date DESC
+LIMIT 90;  -- Last 90 days
+```
+
+---
+
+## **Common Mutations Your Application Will Need**
+
+### **Create Analysis**
+```javascript
+// 1. Check for in-progress analysis
+const existing = await db.query(`
+  SELECT id FROM analyses 
+  WHERE lead_id = $1 AND status IN ('pending', 'processing')
+`, [leadId]);
+
+if (existing.rows.length > 0) {
+  throw new Error('Analysis already in progress');
+}
+
+// 2. Deduct credits (throws if insufficient)
+const txId = await db.rpc('deduct_credits', {
+  p_account_id: accountId,
+  p_amount: analysisType === 'deep' ? -2 : -1,
+  p_transaction_type: 'analysis',
+  p_description: `${analysisType} analysis of @${username}`
+});
+
+// 3. Create analysis record
+const analysis = await db.query(`
+  INSERT INTO analyses (
+    lead_id,
+    account_id,
+    business_profile_id,
+    requested_by,
+    analysis_type,
+    status
+  ) VALUES ($1, $2, $3, $4, $5, 'pending')
+  RETURNING id
+`, [leadId, accountId, businessProfileId, userId, analysisType]);
+
+// 4. Queue for background processing
+await queueAnalysis(analysis.rows[0].id);
+```
+
+### **Update Lead Profile Data (Re-Analysis)**
+```javascript
+// When re-analyzing, PATCH the lead record
+await db.query(`
+  UPDATE leads
+  SET follower_count = $1,
+      bio = $2,
+      profile_pic_url = $3,
+      last_analyzed_at = NOW()
+  WHERE id = $4
+`, [followerCount, bio, profilePicUrl, leadId]);
+```
+
+### **Soft Delete Lead**
+```javascript
+await db.query(`
+  UPDATE leads
+  SET deleted_at = NOW()
+  WHERE id = $1
+`, [leadId]);
+
+// Also soft-delete related analyses
+await db.query(`
+  UPDATE analyses
+  SET deleted_at = NOW()
+  WHERE lead_id = $1
+`, [leadId]);
+```
+
+### **Restore Soft-Deleted Lead**
+```javascript
+await db.query(`
+  UPDATE leads
+  SET deleted_at = NULL
+  WHERE id = $1
+    AND deleted_at > NOW() - INTERVAL '30 days'
+`, [leadId]);
+
+// Also restore analyses
+await db.query(`
+  UPDATE analyses
+  SET deleted_at = NULL
+  WHERE lead_id = $1
+`, [leadId]);
+```
+
+---
+
+# 📋 PART 11: DATA TYPES & IMPORTANT NOTES
+
+## **Critical Data Type Warnings**
+
+### **Stripe IDs are TEXT (not UUID):**
+```sql
+-- ❌ WRONG
 stripe_customer_id uuid
 stripe_subscription_id uuid
 
@@ -1919,1487 +2961,273 @@ stripe_event_id text  -- Stripe returns "evt_1A2B3C..."
 stripe_invoice_id text  -- Stripe returns "in_1DEF456..."
 ```
 
-### **Query Patterns**
+### **Money Always in Cents (Integer):**
 ```sql
--- Always filter deleted records
-SELECT * FROM leads WHERE deleted_at IS NULL;
+-- ❌ WRONG
+price decimal(10,2)  -- Can cause rounding errors
 
--- Get latest analysis for lead
+-- ✅ CORRECT
+price_cents integer  -- $97.00 = 9700 cents
+```
+
+### **Timestamps Always timestamptz:**
+```sql
+-- ❌ WRONG
+created_at timestamp  -- No timezone info
+
+-- ✅ CORRECT
+created_at timestamptz  -- With timezone
+```
+
+---
+
+## **Query Pattern Best Practices**
+
+### **Always Filter Deleted Records:**
+```sql
+-- ❌ WRONG
+SELECT * FROM leads WHERE account_id = $1;
+
+-- ✅ CORRECT
+SELECT * FROM leads 
+WHERE account_id = $1 
+  AND deleted_at IS NULL;
+```
+
+### **Always Use Parameterized Queries:**
+```javascript
+// ❌ WRONG (SQL injection risk)
+const sql = `SELECT * FROM users WHERE email = '${email}'`;
+
+// ✅ CORRECT
+const result = await db.query(
+  'SELECT * FROM users WHERE email = $1',
+  [email]
+);
+```
+
+### **Use RPC for Complex Operations:**
+```javascript
+// ❌ WRONG (race condition)
+const balance = await db.query('SELECT SUM(amount) FROM credit_ledger WHERE account_id = $1', [accountId]);
+if (balance.rows[0].sum >= 2) {
+  await db.query('INSERT INTO credit_ledger ...', [-2, ...]);
+}
+
+// ✅ CORRECT (atomic)
+await db.rpc('deduct_credits', {
+  p_account_id: accountId,
+  p_amount: -2,
+  ...
+});
+```
+
+---
+
+# 📋 PART 12: FUTURE ENHANCEMENTS
+
+## **Phase 2 Features** (Post-Launch)
+
+### **1. Team Permissions** (Role-Based Access)
+- Implement role enforcement in RLS policies
+- Owner: Full control
+- Admin: Manage members/viewers
+- Member: Create analyses, spend credits
+- Viewer: Read-only
+
+### **2. Team Member Invitations**
+- Invite via email
+- Pending invitations table
+- Accept/decline flow
+
+### **3. Trash/Restore UI**
+- View deleted leads within 30 days
+- Restore button
+- Permanent delete button
+
+### **4. Credit Purchase (Top-Up)**
+- Buy additional credits without upgrading
+- Stripe one-time payment
+- Credit packs (50 credits for $15, etc.)
+
+### **5. Usage Analytics Dashboard**
+- Monthly credit consumption charts
+- Analysis success rate
+- Average lead score over time
+- Cost per analysis
+
+### **6. Webhook Retry Logic**
+- Exponential backoff for failed webhooks
+- Dead letter queue
+- Manual retry UI for admins
+
+### **7. Multi-Currency Support**
+- Detect user location
+- Show prices in local currency
+- Stripe handles conversion
+
+### **8. Annual Subscriptions**
+- 2-month discount (10 months for price of 12)
+- One-time payment
+- Credits granted upfront
+
+---
+
+## **Phase 3 Features** (3-6 Months)
+
+### **1. TikTok/YouTube Support**
+- Additional platforms in leads.platform column
+- Platform-specific scraping
+- Cross-platform lead tracking
+
+### **2. Scheduled Re-Analysis**
+- Cron: "Re-analyze every 30 days"
+- Email notification when score changes
+- Track growth over time
+
+### **3. Lead Scoring Filters**
+- Filter by score range (80-100)
+- Filter by niche fit
+- Saved filters
+
+### **4. Export Leads**
+- CSV export
+- Include analysis results
+- Filtered exports
+
+### **5. API Access (Enterprise)**
+- REST API for lead data
+- Webhook callbacks on analysis completion
+- API key management
+
+### **6. White-Label (Enterprise)**
+- Custom domain
+- Custom branding
+- Hide "Powered by Oslira"
+
+---
+
+# 📋 PART 13: TROUBLESHOOTING GUIDE
+
+## **Common Issues & Solutions**
+
+### **Issue: "Insufficient credits" error**
+**Cause:** User tried to analyze with < 2 credits
+
+**Solution:**
+```sql
+-- Check actual balance
+SELECT current_balance FROM credit_balances WHERE account_id = 'xxx';
+
+-- Check ledger (audit)
+SELECT * FROM credit_ledger WHERE account_id = 'xxx' ORDER BY created_at DESC LIMIT 10;
+
+-- If mismatch: Rebuild credit_balances
+DELETE FROM credit_balances WHERE account_id = 'xxx';
+-- Trigger will recreate on next credit_ledger INSERT
+```
+
+---
+
+### **Issue: "Analysis stuck in 'processing' status"**
+**Cause:** Worker crashed mid-analysis
+
+**Solution:**
+```sql
+-- Find stuck analyses
 SELECT * FROM analyses 
-WHERE lead_id = $1 AND deleted_at IS NULL
-ORDER BY completed_at DESC 
-LIMIT 1;
+WHERE status = 'processing' 
+  AND started_at < NOW() - INTERVAL '10 minutes';
 
--- Check for in-progress analysis (deduplication)
-SELECT * FROM analyses
-WHERE lead_id = $1 
-  AND status IN ('pending', 'processing')
-  AND deleted_at IS NULL
-LIMIT 1;
+-- Mark as failed
+UPDATE analyses
+SET status = 'failed',
+    completed_at = NOW()
+WHERE id = 'xxx';
 
--- Get credit balance (after materialization)
-SELECT current_balance FROM credit_balances WHERE account_id = $1;
-
--- Get active subscription
-SELECT * FROM subscriptions 
-WHERE account_id = $1 AND status = 'active'
-LIMIT 1;
+-- Refund credits
+SELECT * FROM deduct_credits(
+  'account_id',
+  2,  -- Refund 2 credits
+  'refund',
+  'Analysis timeout refund'
+);
 ```
 
 ---
 
-## **✅ SCHEMA STATUS**
+### **Issue: "Duplicate webhook processing"**
+**Cause:** Race condition in webhook handler
 
-**14 Tables Total:**
-- Layer 1 (Identity): 1 table
-- Layer 2 (Billing): 9 tables (includes credit_balances from Phase 2)
-- Layer 3 (Business Logic): 4 tables
-
-**All Architectural Decisions:** ✅ Locked  
-**Phase 1 Requirements:** ✅ Defined  
-**Phase 2 Requirements:** ✅ Defined  
-**Phase 3:** ⏸️ Deferred
-
-**READY FOR SQL GENERATION** 
-
----
-
-*This document contains the complete specification for Oslira Database V2. Provide this to any AI assistant for implementation guidance.*
-
-# 🔒 PHASE 1: COMPLETE RLS IMPLEMENTATION
-
-**Add this section after Phase 0 in your database document**
-
----
-
-## **📋 RLS STRATEGY OVERVIEW**
-
-### **Security Model:**
-- ✅ All user-facing tables have RLS enabled
-- ✅ Users only access their own account data
-- ✅ Soft-deleted records hidden by default
-- ✅ Service role bypasses all policies (Cloudflare Worker)
-- ✅ Admin users bypass all policies (support/debugging)
-- ✅ No anonymous access (authentication required)
-
-### **Tables with RLS:**
-- accounts (strict - only user's accounts)
-- account_members (owners manage members)
-- leads (account-scoped, active only)
-- analyses (account-scoped, active only)
-- business_profiles (account-scoped, active only)
-- credit_ledger (read-only for users)
-- account_usage_summary (read-only for users)
-- subscriptions (read-only for users)
-- stripe_invoices (read-only for users)
-
-### **Tables WITHOUT RLS (Service Role Only):**
-- webhook_events
-- ai_usage_logs
-- platform_metrics_daily
-- plans (public read access)
-
----
-
-## **🛠️ HELPER FUNCTIONS**
-
-### **FUNCTION #1: Get User's Account IDs**
-
+**Solution:**
 ```sql
-CREATE OR REPLACE FUNCTION auth.user_account_ids()
-RETURNS SETOF uuid
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-AS $$
-  SELECT am.account_id 
-  FROM account_members am
-  JOIN accounts a ON a.id = am.account_id
-  WHERE am.user_id = auth.uid()
-    AND a.deleted_at IS NULL
-    AND a.is_suspended = false
-$$;
-```
+-- Check for duplicates
+SELECT stripe_event_id, COUNT(*) 
+FROM webhook_events 
+GROUP BY stripe_event_id 
+HAVING COUNT(*) > 1;
 
-**What it does:**
-- Returns all account IDs the current user belongs to
-- Excludes deleted accounts
-- Excludes suspended accounts
-- Used in every RLS policy for account-scoped data
-
-**Usage in policies:**
-```sql
-WHERE account_id IN (SELECT auth.user_account_ids())
+-- If found: Check application logs
+-- Ensure UNIQUE constraint on webhook_events.stripe_event_id
 ```
 
 ---
 
-### **FUNCTION #2: Check if User is Admin**
+### **Issue: "RLS policy blocking service role"**
+**Cause:** Missing service role bypass policy
 
+**Solution:**
 ```sql
-CREATE OR REPLACE FUNCTION auth.is_admin()
-RETURNS boolean
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-AS $$
-  SELECT EXISTS (
-    SELECT 1 FROM users 
-    WHERE id = auth.uid() 
-    AND is_admin = true
-    AND is_suspended = false
-  )
-$$;
-```
-
-**What it does:**
-- Returns true if current user has admin flag
-- Excludes suspended admins
-- Used in all policies for admin bypass
-
-**Usage in policies:**
-```sql
-WHERE auth.is_admin() OR (account_id IN ...)
-```
-
----
-
-## **🔐 CORE RLS POLICIES**
-
-### **1. ACCOUNTS TABLE**
-
-```sql
--- Enable RLS
-ALTER TABLE accounts ENABLE ROW LEVEL SECURITY;
-
--- Policy: Users see only their own accounts
-CREATE POLICY "users_see_own_accounts" ON accounts
-FOR SELECT
-USING (
-  auth.is_admin()
-  OR id IN (SELECT auth.user_account_ids())
-);
-
--- Policy: Users can update their own accounts
-CREATE POLICY "users_update_own_accounts" ON accounts
-FOR UPDATE
-USING (
-  auth.is_admin()
-  OR (id IN (SELECT auth.user_account_ids()) AND deleted_at IS NULL)
-);
-
--- Policy: Users can soft-delete their own accounts (owners only)
-CREATE POLICY "owners_delete_accounts" ON accounts
-FOR UPDATE
-USING (
-  auth.is_admin()
-  OR (owner_id = auth.uid() AND deleted_at IS NULL)
-);
-
--- Policy: Service role bypass
-CREATE POLICY "service_role_full_access" ON accounts
-FOR ALL
-USING (auth.jwt() ->> 'role' = 'service_role');
-```
-
-**Note:** Users CANNOT INSERT accounts directly (signup flow via service role)
-
----
-
-### **2. ACCOUNT_MEMBERS TABLE**
-
-```sql
--- Enable RLS
-ALTER TABLE account_members ENABLE ROW LEVEL SECURITY;
-
--- Policy: Users see members of their accounts
-CREATE POLICY "users_see_members" ON account_members
-FOR SELECT
-USING (
-  auth.is_admin()
-  OR account_id IN (SELECT auth.user_account_ids())
-);
-
--- Policy: Account owners manage members (Phase 2 - currently disabled)
--- Uncomment when member invite feature is ready
-/*
-CREATE POLICY "owners_manage_members" ON account_members
-FOR ALL
-USING (
-  auth.is_admin()
-  OR account_id IN (
-    SELECT id FROM accounts 
-    WHERE owner_id = auth.uid() 
-    AND deleted_at IS NULL
-  )
-);
-*/
-
--- Policy: Service role bypass
-CREATE POLICY "service_role_full_access" ON account_members
-FOR ALL
-USING (auth.jwt() ->> 'role' = 'service_role');
-```
-
-**Phase 2 Note:** Uncomment `owners_manage_members` policy when adding team invite feature
-
----
-
-### **3. LEADS TABLE**
-
-```sql
--- Enable RLS
-ALTER TABLE leads ENABLE ROW LEVEL SECURITY;
-
--- Policy: Users access leads from their accounts (active only)
-CREATE POLICY "account_access_active" ON leads
-FOR SELECT
-USING (
-  auth.is_admin()
-  OR (
-    account_id IN (SELECT auth.user_account_ids())
-    AND deleted_at IS NULL
-  )
-);
-
--- Policy: Users can create leads in their accounts
-CREATE POLICY "users_create_leads" ON leads
-FOR INSERT
-WITH CHECK (
-  auth.is_admin()
-  OR account_id IN (SELECT auth.user_account_ids())
-);
-
--- Policy: Users can update leads in their accounts
-CREATE POLICY "users_update_leads" ON leads
-FOR UPDATE
-USING (
-  auth.is_admin()
-  OR (
-    account_id IN (SELECT auth.user_account_ids())
-    AND deleted_at IS NULL
-  )
-);
-
--- Policy: Users can soft-delete leads (sets deleted_at)
-CREATE POLICY "users_delete_leads" ON leads
-FOR UPDATE
-USING (
-  auth.is_admin()
-  OR (
-    account_id IN (SELECT auth.user_account_ids())
-    AND deleted_at IS NULL
-  )
-);
-
--- OPTIONAL: Trash access (view deleted leads within 30 days)
--- Uncomment if you want "Trash" feature
-/*
-CREATE POLICY "trash_access" ON leads
-FOR SELECT
-USING (
-  auth.is_admin()
-  OR (
-    account_id IN (SELECT auth.user_account_ids())
-    AND deleted_at IS NOT NULL
-    AND deleted_at > NOW() - INTERVAL '30 days'
-  )
-);
-*/
-
--- Policy: Service role bypass
-CREATE POLICY "service_role_full_access" ON leads
+-- Add to affected table
+CREATE POLICY "service_role_bypass" ON table_name
 FOR ALL
 USING (auth.jwt() ->> 'role' = 'service_role');
 ```
 
 ---
 
-### **4. ANALYSES TABLE**
+### **Issue: "User can't see their own data"**
+**Cause:** Not in account_members or account suspended
 
+**Solution:**
 ```sql
--- Enable RLS
-ALTER TABLE analyses ENABLE ROW LEVEL SECURITY;
+-- Check membership
+SELECT * FROM account_members WHERE user_id = 'xxx';
 
--- Policy: Users access analyses from their accounts (active only)
-CREATE POLICY "account_access_active" ON analyses
-FOR SELECT
-USING (
-  auth.is_admin()
-  OR (
-    account_id IN (SELECT auth.user_account_ids())
-    AND deleted_at IS NULL
-  )
-);
+-- Check account status
+SELECT id, is_suspended, deleted_at 
+FROM accounts 
+WHERE id IN (SELECT account_id FROM account_members WHERE user_id = 'xxx');
 
--- Policy: Users can create analyses (via service role during analysis flow)
-CREATE POLICY "users_create_analyses" ON analyses
-FOR INSERT
-WITH CHECK (
-  auth.is_admin()
-  OR account_id IN (SELECT auth.user_account_ids())
-);
-
--- Policy: Users can update analyses
-CREATE POLICY "users_update_analyses" ON analyses
-FOR UPDATE
-USING (
-  auth.is_admin()
-  OR (
-    account_id IN (SELECT auth.user_account_ids())
-    AND deleted_at IS NULL
-  )
-);
-
--- OPTIONAL: Trash access
-/*
-CREATE POLICY "trash_access" ON analyses
-FOR SELECT
-USING (
-  auth.is_admin()
-  OR (
-    account_id IN (SELECT auth.user_account_ids())
-    AND deleted_at IS NOT NULL
-    AND deleted_at > NOW() - INTERVAL '30 days'
-  )
-);
-*/
-
--- Policy: Service role bypass
-CREATE POLICY "service_role_full_access" ON analyses
-FOR ALL
-USING (auth.jwt() ->> 'role' = 'service_role');
+-- If suspended: Unsuspend
+UPDATE accounts SET is_suspended = false, suspended_at = NULL WHERE id = 'xxx';
 ```
 
 ---
 
-### **5. BUSINESS_PROFILES TABLE**
-
-```sql
--- Enable RLS
-ALTER TABLE business_profiles ENABLE ROW LEVEL SECURITY;
-
--- Policy: Users access business profiles from their accounts (active only)
-CREATE POLICY "account_access_active" ON business_profiles
-FOR SELECT
-USING (
-  auth.is_admin()
-  OR (
-    account_id IN (SELECT auth.user_account_ids())
-    AND deleted_at IS NULL
-  )
-);
-
--- Policy: Users can create business profiles
-CREATE POLICY "users_create_profiles" ON business_profiles
-FOR INSERT
-WITH CHECK (
-  auth.is_admin()
-  OR account_id IN (SELECT auth.user_account_ids())
-);
-
--- Policy: Users can update business profiles
-CREATE POLICY "users_update_profiles" ON business_profiles
-FOR UPDATE
-USING (
-  auth.is_admin()
-  OR (
-    account_id IN (SELECT auth.user_account_ids())
-    AND deleted_at IS NULL
-  )
-);
-
--- OPTIONAL: Trash access
-/*
-CREATE POLICY "trash_access" ON business_profiles
-FOR SELECT
-USING (
-  auth.is_admin()
-  OR (
-    account_id IN (SELECT auth.user_account_ids())
-    AND deleted_at IS NOT NULL
-    AND deleted_at > NOW() - INTERVAL '30 days'
-  )
-);
-*/
-
--- Policy: Service role bypass
-CREATE POLICY "service_role_full_access" ON business_profiles
-FOR ALL
-USING (auth.jwt() ->> 'role' = 'service_role');
-```
+**END OF MASTER PLAN**
 
 ---
 
-### **6. CREDIT_LEDGER TABLE (Read-Only)**
-
-```sql
--- Enable RLS
-ALTER TABLE credit_ledger ENABLE ROW LEVEL SECURITY;
-
--- Policy: Users can READ their credit history
-CREATE POLICY "users_read_credit_history" ON credit_ledger
-FOR SELECT
-USING (
-  auth.is_admin()
-  OR account_id IN (SELECT auth.user_account_ids())
-);
-
--- Policy: Service role bypass (INSERT/UPDATE only via service role)
-CREATE POLICY "service_role_full_access" ON credit_ledger
-FOR ALL
-USING (auth.jwt() ->> 'role' = 'service_role');
-```
-
-**Note:** Users can only SELECT, never INSERT/UPDATE/DELETE (managed by `deduct_credits()` function)
-
----
-
-### **7. ACCOUNT_USAGE_SUMMARY TABLE (Read-Only)**
-
-```sql
--- Enable RLS
-ALTER TABLE account_usage_summary ENABLE ROW LEVEL SECURITY;
-
--- Policy: Users can READ their usage stats
-CREATE POLICY "users_read_usage" ON account_usage_summary
-FOR SELECT
-USING (
-  auth.is_admin()
-  OR account_id IN (SELECT auth.user_account_ids())
-);
-
--- Policy: Service role bypass
-CREATE POLICY "service_role_full_access" ON account_usage_summary
-FOR ALL
-USING (auth.jwt() ->> 'role' = 'service_role');
-```
-
----
-
-### **8. SUBSCRIPTIONS TABLE (Read-Only)**
-
-```sql
--- Enable RLS
-ALTER TABLE subscriptions ENABLE ROW LEVEL SECURITY;
-
--- Policy: Users can READ their subscription details
-CREATE POLICY "users_read_subscription" ON subscriptions
-FOR SELECT
-USING (
-  auth.is_admin()
-  OR account_id IN (SELECT auth.user_account_ids())
-);
-
--- Policy: Service role bypass
-CREATE POLICY "service_role_full_access" ON subscriptions
-FOR ALL
-USING (auth.jwt() ->> 'role' = 'service_role');
-```
-
----
-
-### **9. STRIPE_INVOICES TABLE (Read-Only)**
-
-```sql
--- Enable RLS
-ALTER TABLE stripe_invoices ENABLE ROW LEVEL SECURITY;
-
--- Policy: Users can READ their billing history
-CREATE POLICY "users_read_invoices" ON stripe_invoices
-FOR SELECT
-USING (
-  auth.is_admin()
-  OR account_id IN (SELECT auth.user_account_ids())
-);
-
--- Policy: Service role bypass
-CREATE POLICY "service_role_full_access" ON stripe_invoices
-FOR ALL
-USING (auth.jwt() ->> 'role' = 'service_role');
-```
-
----
-
-## **🌐 PUBLIC ACCESS TABLES**
-
-### **PLANS TABLE (Public Read)**
-
-```sql
--- Enable RLS
-ALTER TABLE plans ENABLE ROW LEVEL SECURITY;
-
--- Policy: Anyone can read plans (for pricing page)
-CREATE POLICY "public_read_plans" ON plans
-FOR SELECT
-USING (true);
-
--- Policy: Service role can manage plans
-CREATE POLICY "service_role_full_access" ON plans
-FOR ALL
-USING (auth.jwt() ->> 'role' = 'service_role');
-```
-
----
-
-## **🚫 SERVICE ROLE ONLY TABLES**
-
-These tables have **NO RLS** - only accessible via service role (Cloudflare Worker)
-
-### **Tables:**
-- `webhook_events` - Stripe webhook processing
-- `ai_usage_logs` - API cost tracking
-- `platform_metrics_daily` - Admin analytics
-- `credit_balances` - Materialized view (managed by triggers)
-
-**No policies needed** - service role has full access by default
-
----
-
-## **✅ RLS TESTING CHECKLIST**
-
-Run these tests in Supabase SQL Editor to verify policies work:
-
-### **Test 1: User Cannot See Other Accounts**
-```sql
--- Login as user A
-SET request.jwt.claims.sub = 'user_a_uuid';
-
--- Try to query all accounts
-SELECT * FROM accounts;
--- Should return ONLY user A's accounts
-```
-
-### **Test 2: User Cannot Access Other Account's Leads**
-```sql
--- Login as user A
-SET request.jwt.claims.sub = 'user_a_uuid';
-
--- Try to query leads from account B
-SELECT * FROM leads WHERE account_id = 'account_b_uuid';
--- Should return EMPTY (access denied)
-```
-
-### **Test 3: User Cannot Insert Credits Directly**
-```sql
--- Login as user A
-SET request.jwt.claims.sub = 'user_a_uuid';
-
--- Try to insert credit transaction
-INSERT INTO credit_ledger (account_id, amount, balance_after, ...)
-VALUES ('user_a_account_id', 1000, 1000, ...);
--- Should FAIL (only service role can INSERT)
-```
-
-### **Test 4: User Can Read Their Credit History**
-```sql
--- Login as user A
-SET request.jwt.claims.sub = 'user_a_uuid';
-
--- Read credit history
-SELECT * FROM credit_ledger WHERE account_id IN (SELECT auth.user_account_ids());
--- Should return user A's transactions
-```
-
-### **Test 5: Admin Sees Everything**
-```sql
--- Set user as admin
-UPDATE users SET is_admin = true WHERE id = 'user_a_uuid';
-
--- Login as admin
-SET request.jwt.claims.sub = 'user_a_uuid';
-
--- Query all leads
-SELECT COUNT(*) FROM leads;
--- Should return ALL leads from ALL accounts
-```
-
-### **Test 6: Soft-Deleted Records Hidden**
-```sql
--- Soft delete a lead
-UPDATE leads SET deleted_at = NOW() WHERE id = 'lead_123';
-
--- Login as owner of that lead
-SET request.jwt.claims.sub = 'owner_uuid';
-
--- Try to query
-SELECT * FROM leads WHERE id = 'lead_123';
--- Should return EMPTY (deleted_at IS NOT NULL filtered by RLS)
-```
-
-### **Test 7: Service Role Bypasses All**
-```sql
--- Use service role key (in Cloudflare Worker)
--- Query with SUPABASE_SERVICE_ROLE
-
-SELECT * FROM leads;
--- Should return ALL leads (including deleted, suspended accounts)
-```
-
----
-
-## **🔧 GRANTING ADMIN ACCESS**
-
-### **Manual SQL (Temporary)**
-```sql
--- Grant admin to specific user
-UPDATE users 
-SET is_admin = true 
-WHERE email = 'your-email@example.com';
-
--- Revoke admin
-UPDATE users 
-SET is_admin = false 
-WHERE id = 'user_uuid';
-```
-
-### **Via Service Role API (Production)**
-```javascript
-// Admin management endpoint
-// POST /api/admin/grant-access
-export async function grantAdmin(userId) {
-  // Verify caller is existing admin
-  const caller = await getCurrentUser();
-  if (!caller.is_admin) {
-    throw new Error('Unauthorized');
-  }
-  
-  // Grant admin access
-  await db.query(`
-    UPDATE users 
-    SET is_admin = true,
-        updated_at = NOW()
-    WHERE id = $1
-  `, [userId]);
-  
-  // Log action
-  console.log(`Admin granted to ${userId} by ${caller.id}`);
-}
-```
-
----
-
-## **📊 RLS PERFORMANCE NOTES**
-
-### **Indexes Required for Fast RLS:**
-```sql
--- Account membership lookups (used in EVERY policy)
-CREATE INDEX idx_account_members_user 
-ON account_members(user_id, account_id);
-
--- Account soft delete checks
-CREATE INDEX idx_accounts_active 
-ON accounts(id) 
-WHERE deleted_at IS NULL AND is_suspended = false;
-
--- Leads queries
-CREATE INDEX idx_leads_account_active 
-ON leads(account_id, created_at DESC) 
-WHERE deleted_at IS NULL;
-
--- Analyses queries
-CREATE INDEX idx_analyses_account_active 
-ON analyses(account_id, created_at DESC) 
-WHERE deleted_at IS NULL;
-```
-
-These indexes are already defined in your main document - ensure they're deployed.
-
----
-
-## **🚨 COMMON RLS PITFALLS TO AVOID**
-
-### **Pitfall #1: Forgetting Service Role Bypass**
-```sql
--- ❌ WRONG: No service role policy
-CREATE POLICY "user_access" ON leads ...;
--- Worker calls fail!
-
--- ✅ CORRECT: Always add service role bypass
-CREATE POLICY "service_role_full_access" ON leads
-FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
-```
-
-### **Pitfall #2: RLS on Junction Tables**
-```sql
--- account_members needs RLS too!
--- Without it, users can add themselves to any account
-ALTER TABLE account_members ENABLE ROW LEVEL SECURITY;
-```
-
-### **Pitfall #3: Suspended Account Access**
-```sql
--- ❌ WRONG: Doesn't check suspension
-WHERE account_id IN (SELECT account_id FROM account_members WHERE user_id = auth.uid())
-
--- ✅ CORRECT: Use helper function (includes suspension check)
-WHERE account_id IN (SELECT auth.user_account_ids())
-```
-
-### **Pitfall #4: Missing deleted_at Filter**
-```sql
--- ❌ WRONG: Shows deleted records
-WHERE account_id IN (SELECT auth.user_account_ids())
-
--- ✅ CORRECT: Filter deleted
-WHERE account_id IN (SELECT auth.user_account_ids())
-  AND deleted_at IS NULL
-```
-
----
-
-## **📋 DEPLOYMENT CHECKLIST**
-
-- [ ] Created helper functions (`auth.user_account_ids()`, `auth.is_admin()`)
-- [ ] Enabled RLS on all user-facing tables
-- [ ] Created policies for: accounts, account_members, leads, analyses, business_profiles
-- [ ] Created read-only policies for: credit_ledger, account_usage_summary, subscriptions, stripe_invoices
-- [ ] Created public read policy for: plans
-- [ ] Verified service role bypass on all tables
-- [ ] Added required indexes for RLS performance
-- [ ] Tested with non-admin user (cannot see other accounts)
-- [ ] Tested with admin user (sees everything)
-- [ ] Tested service role access (bypasses all RLS)
-- [ ] Verified soft-deleted records are hidden
-- [ ] Verified suspended accounts are inaccessible
-
----
-
-## **🎯 NEXT STEPS**
-
-### **After RLS Deployment:**
-1. Test thoroughly with real user accounts
-2. Monitor query performance (should be <50ms for most queries)
-3. Add trash/restore feature (uncomment optional policies)
-4. Implement team invite feature (uncomment `owners_manage_members` policy)
-
-### **Phase 2 Features:**
-- Role-based permissions (admin vs member)
-- Trash/restore functionality
-- Team member invitations
-- Audit logging for sensitive operations
-
----
-
-**STATUS: RLS Implementation Complete ✅**
-
-All tables are secured with row-level security policies. Users can only access their own account data, admins bypass all restrictions, and service role has full access for backend operations.
-
-# 🔧 MISSING DOCUMENTATION SECTIONS
-
-**Add these sections to your existing database v2 document**
-
----
-
-## **📍 ADD TO PHASE 0: Credit Balance Trigger**
-
-**Insert this after the `deduct_credits()` function:**
-
-### **Credit Balance Materialization Trigger**
-
-**Purpose:** Auto-update `credit_balances` table whenever `credit_ledger` changes (eliminates need for SUM() queries)
-
-```sql
--- Trigger function
-CREATE OR REPLACE FUNCTION update_credit_balance()
-RETURNS TRIGGER AS $$
-BEGIN
-  INSERT INTO credit_balances (account_id, current_balance, last_transaction_at)
-  VALUES (NEW.account_id, NEW.balance_after, NOW())
-  ON CONFLICT (account_id)
-  DO UPDATE SET
-    current_balance = NEW.balance_after,
-    last_transaction_at = NOW(),
-    updated_at = NOW();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- Attach trigger to credit_ledger
-CREATE TRIGGER credit_ledger_update_balance
-AFTER INSERT ON credit_ledger
-FOR EACH ROW
-EXECUTE FUNCTION update_credit_balance();
-```
-
-**How it works:**
-1. `deduct_credits()` inserts into `credit_ledger`
-2. Trigger fires automatically
-3. `credit_balances.current_balance` updated instantly
-4. Dashboard queries `credit_balances` (fast) instead of `SUM(credit_ledger)` (slow)
-
-**Backfill existing balances:**
-```sql
-INSERT INTO credit_balances (account_id, current_balance, last_transaction_at)
-SELECT 
-  account_id,
-  SUM(amount) as current_balance,
-  MAX(created_at) as last_transaction_at
-FROM credit_ledger
-GROUP BY account_id
-ON CONFLICT (account_id) DO NOTHING;
-```
-
----
-
-## **📍 ADD TO PHASE 1: Additional Constraint**
-
-**Insert this in the "Unique Constraints" section:**
-
-### **One Active Subscription Per Account**
-
-```sql
--- Prevent duplicate active subscriptions
-CREATE UNIQUE INDEX idx_one_active_subscription
-ON subscriptions(account_id)
-WHERE status = 'active';
-```
-
-**Why critical:** Without this, bugs could create multiple active subscriptions:
-```sql
--- ❌ WITHOUT CONSTRAINT (possible bug):
-INSERT INTO subscriptions (account_id, plan_type, status) 
-VALUES ('acc_123', 'free', 'active');
-
-INSERT INTO subscriptions (account_id, plan_type, status) 
-VALUES ('acc_123', 'pro', 'active');
--- Both succeed! Which is the real subscription?
-
--- ✅ WITH CONSTRAINT:
--- Second INSERT fails with: "duplicate key value violates unique constraint"
-```
-
-**Correct upgrade flow:**
-```sql
--- 1. Cancel old subscription
-UPDATE subscriptions 
-SET status = 'canceled', canceled_at = NOW()
-WHERE account_id = 'acc_123' AND status = 'active';
-
--- 2. Create new subscription
-INSERT INTO subscriptions (account_id, plan_type, status, ...)
-VALUES ('acc_123', 'pro', 'active', ...);
-```
-
----
-
-## **📍 NEW SECTION: Phase 3 - Cloudflare Worker Cron Jobs**
-
-**Add this as a new section after Phase 2 in your document:**
-
----
-
-# **PHASE 3: CLOUDFLARE WORKER CRON JOBS**
-
-## **🕐 Cron Configuration**
-
-### **wrangler.toml Setup**
-
-Add scheduled triggers to your Cloudflare Worker configuration:
-
-```toml
-# wrangler.toml
-name = "oslira-worker"
-main = "src/index.ts"
-
-[triggers]
-crons = [
-  "0 2 * * *",      # Daily cleanup - 2 AM UTC
-  "0 3 1 * *"       # Monthly rollup - 3 AM UTC on 1st of month
-]
-```
-
-**Testing cron triggers locally:**
-```bash
-# Trigger daily cleanup
-npx wrangler dev --test-scheduled
-
-# In another terminal
-curl "http://localhost:8787/__scheduled?cron=0+2+*+*+*"
-```
-
----
-
-## **📅 Daily Cleanup Job**
-
-**Purpose:** 
-- Delete AI usage logs older than 90 days
-- Hard-delete soft-deleted records older than 30 days
-- Prevent database bloat
-
-**Implementation:**
-
-```javascript
-/**
- * Daily Cleanup Cron Job
- * Runs at 2 AM UTC daily
- */
-export async function dailyCleanup(env, requestId) {
-  const supabaseUrl = await getApiKey('SUPABASE_URL', env, env.APP_ENV);
-  const serviceRole = await getApiKey('SUPABASE_SERVICE_ROLE', env, env.APP_ENV);
-  
-  const headers = {
-    'apikey': serviceRole,
-    'Authorization': `Bearer ${serviceRole}`,
-    'Content-Type': 'application/json'
-  };
-  
-  logger('info', 'Starting daily cleanup', { requestId });
-  
-  try {
-    // 1. Delete AI logs older than 90 days
-    const aiLogsDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-    const aiLogsRes = await fetch(
-      `${supabaseUrl}/rest/v1/ai_usage_logs?created_at=lt.${aiLogsDate}`,
-      { method: 'DELETE', headers }
-    );
-    
-    const aiLogsDeleted = aiLogsRes.headers.get('content-range')?.split('/')[1] || '0';
-    logger('info', `Deleted ${aiLogsDeleted} old AI logs`, { requestId });
-    
-    // 2. Hard-delete leads soft-deleted 30+ days ago
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    const leadsRes = await fetch(
-      `${supabaseUrl}/rest/v1/leads?deleted_at=lt.${thirtyDaysAgo}`,
-      { method: 'DELETE', headers }
-    );
-    
-    const leadsDeleted = leadsRes.headers.get('content-range')?.split('/')[1] || '0';
-    logger('info', `Hard-deleted ${leadsDeleted} old leads`, { requestId });
-    
-    // NOTE: Analyses CASCADE delete automatically (no separate query needed)
-    
-    // 3. Hard-delete business profiles soft-deleted 30+ days ago
-    const profilesRes = await fetch(
-      `${supabaseUrl}/rest/v1/business_profiles?deleted_at=lt.${thirtyDaysAgo}`,
-      { method: 'DELETE', headers }
-    );
-    
-    const profilesDeleted = profilesRes.headers.get('content-range')?.split('/')[1] || '0';
-    logger('info', `Hard-deleted ${profilesDeleted} old business profiles`, { requestId });
-    
-    // 4. Hard-delete accounts soft-deleted 30+ days ago
-    const accountsRes = await fetch(
-      `${supabaseUrl}/rest/v1/accounts?deleted_at=lt.${thirtyDaysAgo}`,
-      { method: 'DELETE', headers }
-    );
-    
-    const accountsDeleted = accountsRes.headers.get('content-range')?.split('/')[1] || '0';
-    logger('info', `Hard-deleted ${accountsDeleted} old accounts`, { requestId });
-    
-    logger('info', 'Daily cleanup completed successfully', {
-      requestId,
-      aiLogs: aiLogsDeleted,
-      leads: leadsDeleted,
-      profiles: profilesDeleted,
-      accounts: accountsDeleted
-    });
-    
-    return {
-      success: true,
-      deleted: {
-        aiLogs: parseInt(aiLogsDeleted),
-        leads: parseInt(leadsDeleted),
-        profiles: parseInt(profilesDeleted),
-        accounts: parseInt(accountsDeleted)
-      }
-    };
-    
-  } catch (error) {
-    logger('error', 'Daily cleanup failed', {
-      requestId,
-      error: error.message,
-      stack: error.stack
-    });
-    throw error;
-  }
-}
-```
-
----
-
-## **📊 Monthly Rollup Job**
-
-**Purpose:**
-- Finalize previous month's usage summaries
-- Grant monthly credits to all active subscriptions
-- Generate monthly platform metrics
-
-**Implementation:**
-
-```javascript
-/**
- * Monthly Rollup Cron Job
- * Runs at 3 AM UTC on the 1st of each month
- */
-export async function monthlyRollup(env, requestId) {
-  const supabaseUrl = await getApiKey('SUPABASE_URL', env, env.APP_ENV);
-  const serviceRole = await getApiKey('SUPABASE_SERVICE_ROLE', env, env.APP_ENV);
-  
-  const headers = {
-    'apikey': serviceRole,
-    'Authorization': `Bearer ${serviceRole}`,
-    'Content-Type': 'application/json'
-  };
-  
-  logger('info', 'Starting monthly rollup', { requestId });
-  
-  try {
-    // 1. Finalize last month's usage summaries
-    const lastMonthEnd = new Date();
-    lastMonthEnd.setDate(0); // Last day of previous month
-    lastMonthEnd.setHours(23, 59, 59, 999);
-    
-    await fetch(
-      `${supabaseUrl}/rest/v1/account_usage_summary?period_end=eq.${lastMonthEnd.toISOString().split('T')[0]}`,
-      {
-        method: 'PATCH',
-        headers,
-        body: JSON.stringify({ is_finalized: true })
-      }
-    );
-    
-    logger('info', 'Finalized last month usage summaries', { requestId });
-    
-    // 2. Get all active subscriptions that need renewal
-    const now = new Date();
-    const subsRes = await fetch(
-      `${supabaseUrl}/rest/v1/rpc/get_renewable_subscriptions`,
-      {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({})
-      }
-    );
-    
-    if (!subsRes.ok) {
-      throw new Error(`Failed to get renewable subscriptions: ${subsRes.status}`);
-    }
-    
-    const subscriptions = await subsRes.json();
-    
-    logger('info', `Found ${subscriptions.length} subscriptions to renew`, { requestId });
-    
-    // 3. Grant credits to each active subscription
-    let renewedCount = 0;
-    
-    for (const sub of subscriptions) {
-      try {
-        // Call deduct_credits with positive amount (grant)
-        await fetch(
-          `${supabaseUrl}/rest/v1/rpc/deduct_credits`,
-          {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-              p_account_id: sub.account_id,
-              p_amount: sub.credits_per_month,  // Positive = grant
-              p_transaction_type: 'subscription_renewal',
-              p_description: `Monthly credit renewal - ${sub.plan_type} plan`,
-              p_metadata: {
-                subscription_id: sub.id,
-                plan_type: sub.plan_type,
-                renewal_date: now.toISOString()
-              }
-            })
-          }
-        );
-        
-        // Update subscription period
-        const newPeriodEnd = new Date(sub.current_period_end);
-        newPeriodEnd.setMonth(newPeriodEnd.getMonth() + 1);
-        
-        await fetch(
-          `${supabaseUrl}/rest/v1/subscriptions?id=eq.${sub.id}`,
-          {
-            method: 'PATCH',
-            headers,
-            body: JSON.stringify({
-              current_period_start: sub.current_period_end,
-              current_period_end: newPeriodEnd.toISOString()
-            })
-          }
-        );
-        
-        renewedCount++;
-        
-      } catch (error) {
-        logger('error', 'Failed to renew subscription', {
-          requestId,
-          subscription_id: sub.id,
-          account_id: sub.account_id,
-          error: error.message
-        });
-        // Continue with other subscriptions
-      }
-    }
-    
-    logger('info', 'Monthly rollup completed successfully', {
-      requestId,
-      subscriptions_renewed: renewedCount
-    });
-    
-    return {
-      success: true,
-      renewed: renewedCount
-    };
-    
-  } catch (error) {
-    logger('error', 'Monthly rollup failed', {
-      requestId,
-      error: error.message,
-      stack: error.stack
-    });
-    throw error;
-  }
-}
-```
-
----
-
-## **🔧 Helper RPC Function for Monthly Renewal**
-
-**Add this function to Supabase (Phase 1 section):**
-
-```sql
-CREATE OR REPLACE FUNCTION get_renewable_subscriptions()
-RETURNS TABLE (
-  id uuid,
-  account_id uuid,
-  plan_type text,
-  credits_per_month integer,
-  current_period_end timestamptz
-) AS $$
-  SELECT 
-    s.id,
-    s.account_id,
-    s.plan_type,
-    p.credits_per_month,
-    s.current_period_end
-  FROM subscriptions s
-  JOIN plans p ON p.id = s.plan_type
-  JOIN accounts a ON a.id = s.account_id
-  WHERE s.status = 'active'
-    AND s.current_period_end < NOW()
-    AND a.deleted_at IS NULL
-    AND a.is_suspended = false
-$$ LANGUAGE sql STABLE;
-```
-
-**What it does:** Returns all active subscriptions that need monthly credit renewal
-
----
-
-## **🎯 Main Worker Export**
-
-**Update your main worker file:**
-
-```javascript
-// src/index.ts
-import { Hono } from 'hono';
-import { dailyCleanup, monthlyRollup } from './cron/scheduled-jobs';
-
-const app = new Hono();
-
-// ... your existing routes ...
-
-export default {
-  // HTTP requests
-  fetch: app.fetch,
-  
-  // Scheduled tasks
-  async scheduled(event, env, ctx) {
-    const requestId = crypto.randomUUID();
-    
-    try {
-      // Daily cleanup (2 AM UTC)
-      if (event.cron === '0 2 * * *') {
-        await dailyCleanup(env, requestId);
-      }
-      
-      // Monthly rollup (1st of month, 3 AM UTC)
-      if (event.cron === '0 3 1 * *') {
-        await monthlyRollup(env, requestId);
-      }
-      
-    } catch (error) {
-      console.error('Cron job failed:', error);
-      // Don't throw - let Cloudflare retry
-    }
-  }
-};
-```
-
----
-
-## **📊 Monitoring Cron Jobs**
-
-### **View Cron Logs (Cloudflare Dashboard)**
-1. Go to Workers & Pages → Your Worker
-2. Click "Logs" tab
-3. Filter by: `cron`
-
-### **Manual Trigger (Testing)**
-```bash
-# Trigger daily cleanup
-curl -X POST https://your-worker.workers.dev/__scheduled \
-  -H "Content-Type: application/json" \
-  -d '{"cron": "0 2 * * *"}'
-
-# Trigger monthly rollup
-curl -X POST https://your-worker.workers.dev/__scheduled \
-  -H "Content-Type: application/json" \
-  -d '{"cron": "0 3 1 * *"}'
-```
-
-### **Alert on Failures (Optional)**
-```javascript
-// Send alert if cron fails
-async function alertAdmin(message, details) {
-  // Option A: Log to external service
-  await fetch('https://your-monitoring-service.com/alerts', {
-    method: 'POST',
-    body: JSON.stringify({ message, details })
-  });
-  
-  // Option B: Send email via service
-  // Option C: Slack webhook
-  // Option D: PagerDuty, etc.
-}
-```
-
----
-
-## **⚙️ Cron Job Configuration**
-
-### **Credit Renewal Logic**
-
-**Important:** Credits **accumulate** (they don't reset)
-
-```
-User has 15 unused credits
-Month renews with 25 credits
-New balance: 15 + 25 = 40 credits ✅
-
-This is the standard SaaS behavior (roll-over credits)
-```
-
-**Why accumulate?**
-- User-friendly (don't lose unused credits)
-- Encourages annual subscriptions
-- Industry standard (AWS, Stripe, etc. all do this)
-
-**If you want to add a cap later:**
-```javascript
-// In monthlyRollup function, before granting credits:
-const currentBalance = await getCurrentBalance(sub.account_id);
-const maxBalance = sub.credits_per_month * 3;  // Cap at 3 months
-
-if (currentBalance >= maxBalance) {
-  logger('info', 'Skipping renewal - balance at cap', {
-    account_id: sub.account_id,
-    current: currentBalance,
-    max: maxBalance
-  });
-  continue;  // Don't grant credits
-}
-```
-
----
-
-## **✅ Phase 3 Deployment Checklist**
-
-- [ ] Added `[triggers]` section to `wrangler.toml`
-- [ ] Created `dailyCleanup()` function in worker
-- [ ] Created `monthlyRollup()` function in worker
-- [ ] Added `get_renewable_subscriptions()` RPC to Supabase
-- [ ] Updated main worker export with `scheduled` handler
-- [ ] Tested cron locally with `wrangler dev --test-scheduled`
-- [ ] Deployed worker with `wrangler deploy`
-- [ ] Verified cron shows in Cloudflare dashboard (Workers → Triggers)
-- [ ] Manually triggered test run
-- [ ] Checked logs for successful execution
-- [ ] Set up monitoring/alerts for failures
-
----
-
-**END OF PHASE 3**
-
----
-
-## **📍 ADD TO LAYER 2: Plans Preseeding**
-
-**Insert this in your "Complete Table Definitions" section after the plans table definition:**
-
-⚠️ MINOR INCOHERENCE FOUND
-1. Plans Preseeding Section is Cut Off
-In the missing docs artifact, this section is incomplete:
-markdown## **📍 ADD TO LAYER 2: Plans Preseeding**
-
-**Insert this in your "Complete Table Definitions" section after the plans table definition:**
-
-###
-It just stops. You need the actual INSERT statements for placeholder plans.
-Here's what's missing:
-sql-- Preseed Plans Data
-INSERT INTO plans (id, name, credits_per_month, price_cents, stripe_price_id, features) VALUES
-  (
-    'free', 
-    'Free Plan', 
-    25, 
-    0, 
-    NULL, 
-    '{"max_businesses": 1, "max_analyses_per_month": 10}'::jsonb
-  ),
-  (
-    'pro', 
-    'Pro Plan', 
-    500, 
-    9700, 
-    'REPLACE_WITH_STRIPE_PRICE_ID', 
-    '{"max_businesses": 5, "max_analyses_per_month": 1000}'::jsonb
-  ),
-  (
-    'enterprise', 
-    'Enterprise Plan', 
-    2000, 
-    29700, 
-    'REPLACE_WITH_STRIPE_PRICE_ID', 
-    '{"max_businesses": null, "max_analyses_per_month": null}'::jsonb
-  );
-Note: The 'REPLACE_WITH_STRIPE_PRICE_ID' placeholders need to be updated with actual Stripe price IDs after you create products in Stripe dashboard.
-
-2. Missing: Initial Admin Setup
-Your doc doesn't explain HOW to create the first admin user.
-You need to add this to Phase 1:
-markdown## **🔧 Creating First Admin User**
-
-**After deploying the database:**
-```sql
--- Find your user ID from Supabase auth dashboard
-SELECT id, email FROM auth.users WHERE email = 'your-email@example.com';
-
--- Grant admin access
-UPDATE users 
-SET is_admin = true 
-WHERE id = 'your-user-uuid-from-above';
-```
-
-**Or via Supabase Dashboard:**
-1. Go to Authentication → Users
-2. Click your user
-3. Edit user metadata
-4. Add custom claim: `is_admin: true`
-
-3. Missing: Environment Variable Setup
-Your doc mentions AWS Secrets but doesn't show Cloudflare Worker env setup.
-You need to add this to Phase 0:
-markdown## **🔧 Cloudflare Worker Environment Setup**
-
-**Add these to your Cloudflare Worker (via Dashboard or wrangler.toml):**
-```toml
-# wrangler.toml
-[vars]
-APP_ENV = "production"  # or "staging"
-AWS_REGION = "us-east-1"
-
-# Add these as SECRETS (not vars):
-# - AWS_ACCESS_KEY_ID
-# - AWS_SECRET_ACCESS_KEY
-# - SUPABASE_URL
-# - SUPABASE_SERVICE_ROLE
-
-# Run these commands:
-npx wrangler secret put AWS_ACCESS_KEY_ID
-npx wrangler secret put AWS_SECRET_ACCESS_KEY
-npx wrangler secret put SUPABASE_URL
-npx wrangler secret put SUPABASE_SERVICE_ROLE
-```
-
-**Or via Cloudflare Dashboard:**
-1. Workers & Pages → Your Worker → Settings → Variables
-2. Add each secret under "Environment Variables" (Encrypted)
-
-4. Missing: Stripe Product Creation Guide
-Your doc says "create products in Stripe" but doesn't explain HOW.
-You need to add this:
-markdown## **💳 Stripe Setup Guide**
-
-### **1. Create Products in Stripe Dashboard**
-
-1. Go to: https://dashboard.stripe.com/products
-2. Click "Add product"
-
-**Free Plan:**
-- Name: `Free Plan`
-- Pricing: One-time payment of $0 (or skip - no Stripe product needed for free)
-
-**Pro Plan:**
-- Name: `Pro Plan`
-- Pricing: Recurring → Monthly → $97.00
-- Copy the Price ID (starts with `price_...`)
-- Update your `plans` table: `UPDATE plans SET stripe_price_id = 'price_xxx' WHERE id = 'pro';`
-
-**Enterprise Plan:**
-- Name: `Enterprise Plan`
-- Pricing: Recurring → Monthly → $297.00
-- Copy the Price ID
-- Update: `UPDATE plans SET stripe_price_id = 'price_yyy' WHERE id = 'enterprise';`
-
-### **2. Create Webhook Endpoint**
-
-1. Go to: https://dashboard.stripe.com/webhooks
-2. Add endpoint: `https://your-worker.workers.dev/webhooks/stripe`
-3. Select events:
-   - `invoice.paid`
-   - `invoice.payment_failed`
-   - `customer.subscription.created`
-   - `customer.subscription.updated`
-   - `customer.subscription.deleted`
-4. Copy webhook signing secret
-5. Add to worker: `npx wrangler secret put STRIPE_WEBHOOK_SECRET`
-
-5. Missing: Deployment Order
-Your phases are numbered but don't show WHEN to deploy what.
-You need to add this:
-markdown## **🚀 DEPLOYMENT ORDER**
-
-### **Step 1: Supabase Setup (30 minutes)**
-1. Create new Supabase project
-2. Copy Phase 0 + Phase 1 + Phase 2 SQL
-3. Paste into Supabase SQL Editor → Execute
-4. Verify tables created: `SELECT * FROM users;`
-5. Create first admin user (see Phase 1)
-
-### **Step 2: Stripe Setup (15 minutes)**
-1. Create products (Free, Pro, Enterprise)
-2. Copy price IDs
-3. Update plans table with Stripe price IDs
-4. Create webhook endpoint
-5. Copy webhook secret
-
-### **Step 3: AWS Setup (10 minutes)**
-1. Create IAM user with Secrets Manager access
-2. Store API keys in AWS Secrets Manager (see deploy-aws-secrets.sh)
-3. Copy AWS access keys
-
-### **Step 4: Cloudflare Worker Deploy (20 minutes)**
-1. Add environment variables to wrangler.toml
-2. Add secrets: `wrangler secret put ...`
-3. Deploy: `wrangler deploy`
-4. Test signup flow
-5. Test cron jobs: `wrangler dev --test-scheduled`
-
-### **Step 5: Verification (15 minutes)**
-1. Test signup → Should create account + grant 25 credits
-2. Test RLS → Non-admin can't see other accounts
-3. Test credit deduction → Balance updates correctly
-4. Test webhooks → Stripe events recorded
-5. Monitor logs for errors
-
-**Total deployment time: ~90 minutes**
-
-📋 MISSING PIECES SUMMARY
-Missing ItemCritical?Where to AddPlans INSERT statements🟡 MediumPhase 0 (preseed section)First admin setup🟡 MediumPhase 1 (after RLS)Cloudflare env vars🔴 CriticalPhase 0 (deployment)Stripe setup guide🔴 CriticalNew sectionDeployment order🔴 CriticalNew section at end
-
-everything is handled via aws not via cloudflare env variables
+## 🎯 NEXT STEPS
+
+Once this plan is approved:
+
+1. **Generate SQL Files:**
+   - `01-create-tables.sql` (all CREATE TABLE statements)
+   - `02-add-constraints-indexes-functions-triggers.sql`
+   - `03-enable-rls.sql`
+   - `04-preseed.sql`
+
+2. **Generate Application Code Examples:**
+   - Signup flow (complete implementation)
+   - Analysis flow (complete implementation)
+   - Webhook handlers (complete implementation)
+
+3. **Generate Testing Suite:**
+   - Unit tests for RLS policies
+   - Integration tests for credit deduction
+   - Webhook idempotency tests
+
+**Status:** ✅ Plan Complete - Ready for Implementation
+// Returns: "hamza-williams
