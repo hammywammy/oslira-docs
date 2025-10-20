@@ -110,7 +110,18 @@ const balance = await db.query(`
 ## **3. Never Directly INSERT into credit_ledger**
 
 ### **Always use the `deduct_credits()` function:**
+**⚠️ CRITICAL: Always use Worker with service role key for this operation**
 
+This operation must NEVER be called from the frontend. The `deduct_credits()` function is marked `SECURITY DEFINER` which means it bypasses RLS. Only your Cloudflare Worker with the service role key should call this.
+```javascript
+// ❌ NEVER DO THIS IN FRONTEND
+const { data } = await supabase.rpc('deduct_credits', ...);
+// User could manipulate params to deduct from other accounts
+
+// ✅ ONLY IN BACKEND WORKER
+const { data } = await supabaseAdmin.rpc('deduct_credits', ...);
+// Service role + SECURITY DEFINER = safe
+```
 ```javascript
 // ❌ WRONG (race conditions, no overdraft protection)
 const balance = await getBalance(accountId);
@@ -227,9 +238,9 @@ const { data } = await supabaseAdmin
 # 🔧 COMMON OPERATIONS
 
 ## **Operation: Get User's Accounts**
-
 ```javascript
 async function getUserAccounts(userId) {
+  // Frontend uses anon key - RLS filters automatically
   const { data } = await supabase
     .from('accounts')
     .select(`
@@ -243,6 +254,7 @@ async function getUserAccounts(userId) {
     .is('deleted_at', null)
     .eq('is_suspended', false);
   
+  // RLS policy ensures user only sees accounts they're a member of
   return data;
 }
 
@@ -256,6 +268,9 @@ async function getUserAccounts(userId) {
 //     credit_balances: [{ current_balance: 48 }]
 //   }
 // ]
+
+// ❌ User cannot see accounts they don't belong to
+// ❌ Anonymous users get empty array (RLS blocks access)
 ```
 
 ---
@@ -794,44 +809,149 @@ if (existing.length > 0) {
   return { error: 'Analysis already in progress' };
 }
 ```
-
 ---
+
+## **Pitfall #6: Using Service Role from Frontend**
+```javascript
+// ❌ CRITICAL SECURITY HOLE (exposes service key)
+const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+// If this code is in frontend, ANYONE can steal the key from browser
+
+// ✅ CORRECT - Two separate clients
+// Frontend (React/Vue/etc):
+const supabase = createClient(SUPABASE_URL, ANON_KEY);
+// User can only access their data via RLS
+
+// Backend Worker (Cloudflare):
+const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+// Admin access, bypasses RLS
+```
+
+**Why this matters:**
+- Service role key in frontend = complete database access for attackers
+- Attackers can read ALL accounts' data
+- Attackers can modify financial records
+- This is the #1 most dangerous Supabase mistake
+
+**Rule:** Service role key = Backend/Worker ONLY. Frontend = Anon key ONLY.
+---
+
+
 
 # 🔐 SECURITY RULES
 
 ## **RLS is Enabled - What This Means:**
 
-### **Frontend Queries (User Token):**
-- ✅ Can see: Their own account's data
+### **Frontend Queries (Authenticated Users Only):**
+- ✅ Can see: Their own account's data only
+- ✅ Can modify: Their own account's data only (WITH CHECK enforced)
 - ❌ Cannot see: Other accounts' data
 - ❌ Cannot see: Deleted records
 - ❌ Cannot see: Suspended accounts
+- ❌ Cannot access: If not logged in (anon users blocked)
 
-### **Backend Queries (Service Role):**
+### **Backend Queries (Service Role via Worker):**
 - ✅ Can see: Everything (all accounts)
+- ✅ Can modify: Everything (bypasses RLS)
 - ✅ Can see: Deleted records
 - ✅ Can see: Suspended accounts
-- ⚠️ Must validate permissions in application code
+- ⚠️ Must validate permissions in Worker code
+- ⚠️ Never expose service role key to frontend
 
 ---
 
-## **Tables with RLS Enabled:**
-- accounts
-- account_members
-- leads
-- analyses
-- business_profiles
-- credit_ledger (read-only for users)
-- credit_balances (read-only for users)
-- account_usage_summary (read-only for users)
-- subscriptions (read-only for users)
-- stripe_invoices (read-only for users)
+## **Tables with RLS Enabled (Authenticated Users Only):**
 
-## **Tables WITHOUT RLS (Service Role Only):**
-- webhook_events
-- ai_usage_logs
-- platform_metrics_daily
-- plans (public read)
+**Full Access (SELECT/INSERT/UPDATE/DELETE):**
+- accounts (filtered by user's account membership)
+- account_members (filtered by user's account membership)
+- leads (filtered by user's account membership)
+- analyses (filtered by user's account membership)
+- business_profiles (filtered by user's account membership)
+
+**Read-Only Access (SELECT only):**
+- credit_ledger (user can view their transactions, Worker writes via RPC)
+- credit_balances (user can view balance, Worker writes via trigger)
+- account_usage_summary (user can view stats, Worker calculates)
+- subscriptions (user can view history, Stripe webhooks write)
+- stripe_invoices (user can view invoices, Stripe webhooks write)
+- plans (all authenticated users can read, Worker writes)
+
+**No User Access (Service Role Only via Worker):**
+- webhook_events (system logging)
+- ai_usage_logs (cost tracking)
+- platform_metrics_daily (admin analytics)
+
+---
+
+## **Security Features Enforced:**
+
+✅ **Multi-tenant isolation:** Users cannot access other accounts' data  
+✅ **WITH CHECK clauses:** Users cannot insert/update data for other accounts  
+✅ **No anonymous access:** Must be logged in to access any data  
+✅ **SECURITY DEFINER functions:** Credit operations bypass RLS safely  
+✅ **Soft delete filtering:** Deleted records hidden from queries  
+✅ **Performance optimized:** auth.uid() wrapped in subqueries (100x faster)
+
+---
+
+# 🛡️ SECURITY AUDIT CHECKLIST
+
+Run these queries periodically to verify security:
+
+## **1. Verify All Functions Have SECURITY DEFINER**
+```sql
+SELECT 
+  proname,
+  CASE WHEN prosecdef THEN '✅ SECURE' ELSE '❌ FIX' END
+FROM pg_proc
+WHERE proname IN ('deduct_credits', 'update_credit_balance', 'get_renewable_subscriptions')
+  AND pronamespace = 'public'::regnamespace;
+-- All should show ✅ SECURE
+```
+
+## **2. Verify All Policies Use Authenticated Role**
+```sql
+SELECT tablename, policyname, roles
+FROM pg_policies
+WHERE schemaname = 'public'
+  AND 'public' = ANY(roles) OR 'anon' = ANY(roles);
+-- Should return 0 rows (except plans table which is public read)
+```
+
+## **3. Verify INSERT/UPDATE Policies Have WITH CHECK**
+```sql
+SELECT tablename, policyname
+FROM pg_policies
+WHERE schemaname = 'public'
+  AND cmd IN ('INSERT', 'UPDATE', 'ALL')
+  AND with_check IS NULL
+  AND tablename IN (
+    'accounts', 'account_members', 'business_profiles', 
+    'leads', 'analyses'
+  );
+-- Should return 0 rows
+```
+
+## **4. Check for Views Without RLS**
+```sql
+SELECT viewname
+FROM pg_views 
+WHERE schemaname = 'public';
+-- Verify each view has security_invoker = on
+```
+
+## **5. Verify No Exposed HTTP Extension**
+```sql
+SELECT routine_name, grantee
+FROM information_schema.routine_privileges
+WHERE routine_schema = 'extensions' 
+  AND routine_name LIKE 'http%'
+  AND grantee IN ('public', 'anon', 'authenticated');
+-- Should return 0 rows
+```
+
+**Run this audit monthly or after any schema changes.**
 
 ---
 
