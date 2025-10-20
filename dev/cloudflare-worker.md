@@ -792,3 +792,839 @@ Nothing is perfect until proven in production. This is a **95/100 foundation** t
 ---
 
 **END OF IMPLEMENTATION PLAN**
+
+# 🎯 FINALIZED OPTIMIZATION PLAN - COMPLETE REFERENCE
+
+Based on our entire conversation, here's everything we agreed upon, organized by priority.
+
+---
+
+## **📋 EXECUTIVE SUMMARY**
+
+### **Current Performance:**
+- **LIGHT:** 10-13s (8s Apify + 2-3s AI)
+- **DEEP:** 30s (8s Apify + 20s AI sequential)
+- **XRAY:** 35s (8s Apify + 25s AI mixed)
+
+### **Optimized Targets:**
+- **LIGHT:** 8-11s cold, 2-3s cached (avg ~6s with 50% cache)
+- **DEEP:** 18-23s cold, 12-15s cached
+- **XRAY:** 16-18s cold, 10-12s cached
+
+### **Key Constraints:**
+- Apify: 6-8s minimum (unavoidable bottleneck)
+- Apify concurrency: 5-10 runs (Starter plan limit)
+- Bulk 100 profiles: 60-120 seconds (batched, not parallel)
+
+---
+
+## **🎯 PHASE 1: CRITICAL OPTIMIZATIONS (Week 1-2)**
+
+### **1. GLOBAL PROFILE CACHING**
+
+**Why:** 50%+ of analyses will hit cache after momentum builds, making them instant.
+
+**Implementation:**
+```typescript
+// features/analysis/infrastructure/cache/r2-cache.service.ts
+
+export class R2CacheService {
+  private bucket: R2Bucket;
+  
+  async get(username: string, analysisType: AnalysisType): Promise<CachedProfile | null> {
+    const key = `instagram:${username}:v1`;
+    const cached = await this.bucket.get(key);
+    
+    if (!cached) return null;
+    
+    const data = await cached.json() as CachedProfile;
+    const age = Date.now() - new Date(data.cached_at).getTime();
+    
+    // Different TTLs by analysis type
+    const ttls = {
+      light: 24 * 60 * 60 * 1000,  // 24 hours
+      deep: 12 * 60 * 60 * 1000,   // 12 hours
+      xray: 6 * 60 * 60 * 1000     // 6 hours
+    };
+    
+    if (age > ttls[analysisType]) {
+      return null; // Expired
+    }
+    
+    return data;
+  }
+  
+  async set(username: string, profileData: ProfileData): Promise<void> {
+    const key = `instagram:${username}:v1`;
+    const cacheData = {
+      profile: profileData,
+      cached_at: new Date().toISOString(),
+      username: profileData.username,
+      followers: profileData.followersCount
+    };
+    
+    await this.bucket.put(key, JSON.stringify(cacheData));
+  }
+}
+```
+
+**Impact:**
+- 50% of requests skip Apify entirely after Month 1
+- Cache hits: <1s (vs 8s scraping)
+- Cost savings: $0.01 per cached request
+
+---
+
+### **2. PROMPT CACHING (Business Context)**
+
+**Why:** Business context repeated across 100s of analyses = wasted cost + speed.
+
+**Implementation:**
+```typescript
+// features/analysis/domain/services/ai-adapter.service.ts
+
+export async function executeWithPromptCache(
+  profile: ProfileData,
+  business: BusinessProfile,
+  analysisType: AnalysisType
+) {
+  // Mark business context for caching
+  const messages = [
+    {
+      role: 'system',
+      content: buildSystemPrompt(analysisType)
+    },
+    {
+      role: 'user',
+      content: [
+        // CACHED SECTION (business context)
+        {
+          type: 'text',
+          text: buildBusinessContext(business),
+          cache_control: { type: 'ephemeral' } // Claude caching
+        },
+        // DYNAMIC SECTION (profile data - NOT cached)
+        {
+          type: 'text',
+          text: buildProfileData(profile)
+        }
+      ]
+    }
+  ];
+  
+  // For OpenAI: Place business context first (auto-cached after 1024 tokens)
+  // For Claude: Use cache_control marker
+  
+  return await openai.chat.completions.create({
+    model: 'gpt-4o',
+    messages
+  });
+}
+```
+
+**Impact:**
+- Business context (800 tokens): 90% cheaper after first use
+- Speed: 2-4s faster per analysis (cached tokens process faster)
+- Cost: $0.003 → $0.0003 per analysis
+
+---
+
+### **3. FULL AI PARALLELIZATION**
+
+**Why:** Current sequential AI calls waste 10-15 seconds.
+
+**Current (Bad):**
+```typescript
+// DEEP: Sequential
+const core = await executeCoreStrategy();      // 15s
+const [outreach, personality] = await Promise.all([
+  executeOutreach(),   // 4s
+  executePersonality() // 4s
+]); // Total: 15s + 4s = 19s
+```
+
+**Optimized (Good):**
+```typescript
+// DEEP: Full parallel
+const [core, outreach, personality] = await Promise.all([
+  executeCoreStrategy(),   // 15s
+  executeOutreach(),       // 4s
+  executePersonality()     // 4s
+]);
+// Total: max(15s, 4s, 4s) = 15s (saved 4s)
+
+// XRAY: Full parallel
+const [psycho, commercial, outreach, personality] = await Promise.all([
+  executePsychographic(),  // 10s
+  executeCommercial(),     // 6s
+  executeOutreach(),       // 4s
+  executePersonality()     // 4s
+]);
+// Total: max(10s, 6s, 4s, 4s) = 10s (saved 12s)
+```
+
+**Impact:**
+- DEEP: 19s → 15s (4s faster)
+- XRAY: 22s → 10s (12s faster)
+
+---
+
+### **4. ASYNC EXECUTION (Queue + Workflows)**
+
+**Why:** User shouldn't wait 20s staring at loading spinner.
+
+**Implementation:**
+```typescript
+// features/analysis/application/use-cases/analyze.usecase.ts
+
+export async function handleAnalyzeRequest(
+  username: string,
+  analysisType: AnalysisType,
+  businessId: string,
+  userId: string
+) {
+  // Generate run_id immediately
+  const run_id = generateRunId();
+  
+  // Create pending record
+  await db.insert('runs', {
+    run_id,
+    user_id: userId,
+    business_id: businessId,
+    status: 'pending',
+    created_at: new Date()
+  });
+  
+  // Queue for background processing
+  await queue.send({
+    type: 'analyze',
+    run_id,
+    username,
+    analysisType,
+    businessId,
+    userId
+  });
+  
+  // Return immediately (400ms response)
+  return {
+    run_id,
+    status: 'queued',
+    estimated_time: getEstimatedTime(analysisType),
+    poll_url: `/runs/${run_id}`
+  };
+}
+
+// Background worker
+export async function processAnalysis(message: QueueMessage) {
+  const { run_id, username, analysisType, businessId, userId } = message;
+  
+  try {
+    // Update status
+    await updateRunStatus(run_id, 'analyzing');
+    
+    // Check cache
+    const cached = await cache.get(username, analysisType);
+    if (cached) {
+      await updateRunStatus(run_id, 'cache_hit');
+      return await completeFromCache(run_id, cached);
+    }
+    
+    // Scrape + analyze
+    const profile = await scrapeProfile(username, analysisType);
+    const analysis = await analyzeProfile(profile, business, analysisType);
+    
+    // Save results
+    await saveAnalysis(run_id, analysis);
+    await updateRunStatus(run_id, 'complete');
+    
+  } catch (error) {
+    await updateRunStatus(run_id, 'failed', error.message);
+  }
+}
+```
+
+**User Experience:**
+```
+POST /v1/analyze
+  ↓ (400ms)
+Response:
+{
+  run_id: 'run_abc123',
+  status: 'queued',
+  estimated_time: '18-23 seconds',
+  poll_url: '/runs/run_abc123'
+}
+
+// Frontend polls every 2s
+GET /runs/run_abc123
+{
+  status: 'analyzing',
+  progress: 'Scraping profile...',
+  elapsed: 8
+}
+
+GET /runs/run_abc123
+{
+  status: 'complete',
+  result: { score: 85, ... },
+  processing_time: 19
+}
+```
+
+---
+
+### **5. INTELLIGENT MODEL SELECTION**
+
+**Why:** gpt-5-nano fails on complex tasks, wastes time reasoning.
+
+**Current Issues:**
+- LIGHT uses gpt-5-mini (should use gpt-4o-mini - faster for simple tasks)
+- Reasoning effort not optimized per task
+- No model fallback strategy
+
+**Optimized Config:**
+```typescript
+// features/analysis/domain/config/ai-models.config.ts
+
+export const AI_MODEL_CONFIG = {
+  LIGHT: {
+    tasks: {
+      scoring: {
+        model: 'gpt-4o-mini',        // Fast, cheap, good at JSON
+        reasoning_effort: 'low',
+        max_tokens: 1000,
+        temperature: 0,
+        expected_time: '2-3s',
+        fallback: 'gpt-5-mini'
+      }
+    }
+  },
+  
+  DEEP: {
+    tasks: {
+      core_strategy: {
+        model: 'gpt-5-mini',         // Smart enough, not overkill
+        reasoning_effort: 'medium',
+        max_tokens: 3000,
+        temperature: 0.4,
+        expected_time: '12-15s',
+        is_bottleneck: true
+      },
+      outreach: {
+        model: 'gpt-5-mini',
+        reasoning_effort: 'low',
+        max_tokens: 2000,
+        temperature: 0.6,
+        expected_time: '3-4s'
+      },
+      personality: {
+        model: 'gpt-5-mini',
+        reasoning_effort: 'low',
+        max_tokens: 1500,
+        temperature: 0.3,
+        expected_time: '3-4s'
+      }
+    }
+  },
+  
+  XRAY: {
+    tasks: {
+      psychographic: {
+        model: 'gpt-5',              // Premium model for deep insight
+        reasoning_effort: 'medium',
+        max_tokens: 4000,
+        temperature: 0.5,
+        expected_time: '7-10s',
+        justification: 'Requires deepest psychological insight'
+      },
+      commercial: {
+        model: 'gpt-5-mini',
+        reasoning_effort: 'medium',
+        max_tokens: 3000,
+        temperature: 0.4,
+        expected_time: '5-6s'
+      },
+      outreach: {
+        model: 'gpt-5-mini',
+        reasoning_effort: 'low',
+        max_tokens: 2000,
+        temperature: 0.6,
+        expected_time: '3-4s'
+      },
+      personality: {
+        model: 'gpt-5-mini',
+        reasoning_effort: 'low',
+        max_tokens: 1500,
+        temperature: 0.3,
+        expected_time: '3-4s'
+      }
+    }
+  }
+};
+```
+
+---
+
+## **🎯 PHASE 2: INFRASTRUCTURE IMPROVEMENTS (Week 3-4)**
+
+### **6. COMPREHENSIVE COST TRACKING**
+
+**Current Problem:** Only tracking AI costs (~40% of total).
+
+**Full Cost Tracking:**
+```typescript
+// features/analysis/domain/services/cost-tracker.service.ts
+
+export class CostTracker {
+  private costs = {
+    apify: 0,
+    ai_calls: [] as AICallCost[],
+    total: 0
+  };
+  
+  trackApifyCall(postsScraped: number, duration: number) {
+    // Apify charges ~$0.001 per 100 posts or $0.01 per 10s of compute
+    const cost = Math.max(
+      (postsScraped / 100) * 0.001,
+      (duration / 10000) * 0.01
+    );
+    this.costs.apify += cost;
+    this.costs.total += cost;
+  }
+  
+  trackAICall(model: string, tokensIn: number, tokensOut: number, duration: number) {
+    const pricing = AI_PRICING[model];
+    const cost = (tokensIn / 1_000_000) * pricing.per_1m_in +
+                 (tokensOut / 1_000_000) * pricing.per_1m_out;
+    
+    this.costs.ai_calls.push({
+      model,
+      tokens_in: tokensIn,
+      tokens_out: tokensOut,
+      cost,
+      duration_ms: duration
+    });
+    this.costs.total += cost;
+  }
+  
+  getBreakdown() {
+    return {
+      apify_cost: this.costs.apify,
+      ai_costs: this.costs.ai_calls,
+      total_cost: this.costs.total,
+      cost_by_provider: {
+        apify: this.costs.apify,
+        openai: this.costs.ai_calls
+          .filter(c => c.model.includes('gpt'))
+          .reduce((sum, c) => sum + c.cost, 0),
+        claude: this.costs.ai_calls
+          .filter(c => c.model.includes('claude'))
+          .reduce((sum, c) => sum + c.cost, 0)
+      },
+      margin: {
+        light: 0.97 - this.costs.total,    // 1 credit revenue
+        deep: 4.85 - this.costs.total,     // 5 credits revenue
+        xray: 5.82 - this.costs.total      // 6 credits revenue
+      }
+    };
+  }
+}
+```
+
+---
+
+### **7. STEP-BY-STEP PERFORMANCE TRACKING**
+
+**Why:** Need to identify bottlenecks, not just total time.
+
+```typescript
+// features/analysis/domain/services/performance-tracker.service.ts
+
+export class PerformanceTracker {
+  private steps: PerformanceStep[] = [];
+  
+  startStep(name: string) {
+    this.steps.push({
+      name,
+      start: Date.now(),
+      end: null,
+      duration_ms: null
+    });
+  }
+  
+  endStep(name: string) {
+    const step = this.steps.find(s => s.name === name && !s.end);
+    if (step) {
+      step.end = Date.now();
+      step.duration_ms = step.end - step.start;
+    }
+  }
+  
+  getBreakdown() {
+    const total = this.steps.reduce((sum, s) => sum + (s.duration_ms || 0), 0);
+    const bottleneck = this.steps.reduce((max, s) =>
+      (s.duration_ms || 0) > (max.duration_ms || 0) ? s : max
+    );
+    
+    return {
+      steps: this.steps.map(s => ({
+        step: s.name,
+        duration_ms: s.duration_ms,
+        percentage: ((s.duration_ms || 0) / total) * 100
+      })),
+      total_duration_ms: total,
+      bottleneck: {
+        step: bottleneck.name,
+        duration_ms: bottleneck.duration_ms
+      }
+    };
+  }
+}
+
+// Usage in analysis
+const perf = new PerformanceTracker();
+
+perf.startStep('cache_check');
+const cached = await checkCache();
+perf.endStep('cache_check');
+
+perf.startStep('apify_scrape');
+const profile = await scrapeProfile();
+perf.endStep('apify_scrape');
+
+perf.startStep('ai_analysis');
+const analysis = await analyzeProfile();
+perf.endStep('ai_analysis');
+
+console.log(perf.getBreakdown());
+// Output:
+// {
+//   steps: [
+//     { step: 'cache_check', duration_ms: 50, percentage: 0.5% },
+//     { step: 'apify_scrape', duration_ms: 7200, percentage: 72% },
+//     { step: 'ai_analysis', duration_ms: 2750, percentage: 27.5% }
+//   ],
+//   bottleneck: { step: 'apify_scrape', duration_ms: 7200 }
+// }
+```
+
+---
+
+### **8. CENTRALIZED CONFIGURATION**
+
+**Single source of truth for all values:**
+
+```typescript
+// features/analysis/domain/config/analysis.config.ts
+
+export const ANALYSIS_CONFIG = {
+  LIGHT: {
+    internal_name: 'light',
+    display_name: 'Quick Analysis',
+    db_value: 'light',
+    credit_cost: 1,
+    price_usd: 0.97,
+    
+    performance: {
+      target_duration_ms: 6000,
+      acceptable_max_ms: 11000,
+      cache_ttl_hours: 24
+    },
+    
+    ai: {
+      model: 'gpt-4o-mini',
+      reasoning_effort: 'low',
+      max_tokens: 1000,
+      use_prompt_cache: true
+    },
+    
+    scraping: {
+      required: true,
+      posts_limit: 12,
+      use_cache: true
+    },
+    
+    output: {
+      includes: ['score', 'brief_summary', 'confidence'],
+      excludes: ['deep_insights', 'outreach']
+    }
+  },
+  
+  DEEP: {
+    internal_name: 'deep',
+    display_name: 'Profile Analysis',
+    db_value: 'deep',
+    credit_cost: 5,
+    price_usd: 4.85,
+    
+    performance: {
+      target_duration_ms: 20000,
+      acceptable_max_ms: 25000,
+      cache_ttl_hours: 12
+    },
+    
+    ai: {
+      parallel_calls: 3,
+      models: {
+        core_strategy: 'gpt-5-mini',
+        outreach: 'gpt-5-mini',
+        personality: 'gpt-5-mini'
+      },
+      use_prompt_cache: true,
+      use_batch_api: false  // Add later
+    },
+    
+    scraping: {
+      required: true,
+      posts_limit: 50,
+      use_cache: true
+    },
+    
+    output: {
+      includes: ['score', 'deep_summary', 'outreach', 'personality', 'selling_points'],
+      excludes: ['psychographic_deep_dive']
+    }
+  },
+  
+  XRAY: {
+    internal_name: 'xray',
+    display_name: 'X-Ray Analysis',
+    db_value: 'xray',
+    credit_cost: 6,
+    price_usd: 5.82,
+    
+    performance: {
+      target_duration_ms: 18000,
+      acceptable_max_ms: 25000,
+      cache_ttl_hours: 6
+    },
+    
+    ai: {
+      parallel_calls: 4,
+      models: {
+        psychographic: 'gpt-5',
+        commercial: 'gpt-5-mini',
+        outreach: 'gpt-5-mini',
+        personality: 'gpt-5-mini'
+      },
+      use_prompt_cache: true,
+      use_semantic_cache: false  // Add later
+    },
+    
+    scraping: {
+      required: true,
+      posts_limit: 50,
+      use_cache: true
+    },
+    
+    output: {
+      includes: ['all'],
+      excludes: []
+    }
+  }
+} as const;
+
+// Type-safe accessor
+export function getAnalysisConfig(type: 'light' | 'deep' | 'xray') {
+  return ANALYSIS_CONFIG[type.toUpperCase()];
+}
+```
+
+---
+
+### **9. BULK ANALYSIS BATCHING (Apify-Aware)**
+
+**Handle Apify concurrency limits gracefully:**
+
+```typescript
+// features/analysis/application/use-cases/bulk-analyze.usecase.ts
+
+export async function handleBulkAnalyze(
+  usernames: string[],
+  analysisType: AnalysisType,
+  businessId: string,
+  userId: string
+) {
+  const APIFY_CONCURRENCY = 10; // Starter plan limit
+  
+  // Create bulk job
+  const job_id = generateJobId();
+  await db.insert('bulk_jobs', {
+    job_id,
+    user_id: userId,
+    business_id: businessId,
+    total_count: usernames.length,
+    completed_count: 0,
+    status: 'queued'
+  });
+  
+  // Split into batches
+  const batches = chunkArray(usernames, APIFY_CONCURRENCY);
+  
+  // Queue all batches
+  for (let i = 0; i < batches.length; i++) {
+    await queue.send({
+      type: 'bulk_batch',
+      job_id,
+      batch_number: i + 1,
+      total_batches: batches.length,
+      usernames: batches[i],
+      analysisType,
+      businessId,
+      userId
+    });
+  }
+  
+  return {
+    job_id,
+    total: usernames.length,
+    batches: batches.length,
+    estimated_time: `${batches.length * 10}s`,
+    message: `Processing ${usernames.length} profiles in ${batches.length} batches`
+  };
+}
+
+// Progress endpoint
+export async function getBulkJobStatus(job_id: string) {
+  const job = await db.query('SELECT * FROM bulk_jobs WHERE job_id = $1', [job_id]);
+  return {
+    job_id,
+    status: job.status,
+    completed: job.completed_count,
+    total: job.total_count,
+    progress: Math.round((job.completed_count / job.total_count) * 100),
+    results_url: `/bulk-jobs/${job_id}/results`
+  };
+}
+```
+
+**User Experience:**
+```
+POST /v1/bulk-analyze { usernames: [100 profiles] }
+  ↓
+Response:
+{
+  job_id: 'bulk_xyz',
+  total: 100,
+  batches: 10,
+  estimated_time: '100s',
+  poll_url: '/bulk-jobs/bulk_xyz'
+}
+
+// Poll every 3s
+GET /bulk-jobs/bulk_xyz
+{
+  status: 'processing',
+  completed: 47,
+  total: 100,
+  progress: 47%,
+  eta: '53s'
+}
+```
+
+---
+
+## **🎯 PHASE 3: FUTURE ENHANCEMENTS (Month 2+)**
+
+### **10. Cloudflare Analytics Engine**
+
+Replace manual logging with native analytics:
+
+```typescript
+// Track every request
+env.ANALYTICS_ENGINE.writeDataPoint({
+  blobs: [run_id, username, analysisType],
+  doubles: [cost, duration_ms, score],
+  indexes: [userId, businessId]
+});
+
+// Query later
+SELECT
+  blob1 as analysis_type,
+  AVG(double2) as avg_duration_ms,
+  SUM(double1) as total_cost,
+  COUNT(*) as total_runs
+FROM analytics
+WHERE index1 = 'user_123'
+AND timestamp > NOW() - INTERVAL '7 days'
+GROUP BY analysis_type;
+```
+
+---
+
+### **11. Semantic Caching (XRAY only)**
+
+Cache similar queries using embeddings:
+
+```typescript
+// Check if similar analysis exists
+const embedding = await getEmbedding(`${business_context}|${profile.bio}`);
+const similar = await vectorDB.search(embedding, threshold: 0.9);
+if (similar) {
+  return adaptCachedResult(similar, profile);
+}
+```
+
+---
+
+### **12. Batch API (Cost Optimization)**
+
+Combine multiple AI calls into single batch request (50% discount):
+
+```typescript
+// Instead of 3 separate calls
+const batch = await openai.batches.create({
+  requests: [
+    { id: 'core', messages: coreMessages },
+    { id: 'outreach', messages: outreachMessages },
+    { id: 'personality', messages: personalityMessages }
+  ]
+});
+```
+
+---
+
+## **📊 EXPECTED IMPROVEMENTS SUMMARY**
+
+| Metric | Before | After Phase 1 | After Phase 2 | After Phase 3 |
+|--------|--------|---------------|---------------|---------------|
+| **LIGHT (cold)** | 10-13s | 8-11s | 7-10s | 6-9s |
+| **LIGHT (cached)** | N/A | 2-3s | 1-2s | <1s |
+| **DEEP (cold)** | 30s | 19-23s | 18-22s | 16-20s |
+| **DEEP (cached)** | N/A | 12-15s | 11-14s | 10-12s |
+| **XRAY (cold)** | 35s | 18-22s | 16-20s | 14-18s |
+| **XRAY (cached)** | N/A | 10-12s | 9-11s | 8-10s |
+| **Cost per LIGHT** | $0.0024 | $0.0005 | $0.0003 | $0.0002 |
+| **Bulk 100 (LIGHT)** | 16min | 80-120s | 70-100s | 60-90s |
+| **Cache hit rate** | 0% | 30% | 50% | 60% |
+
+---
+
+## **✅ MUST-ADDS CHECKLIST**
+
+### **Week 1 (Critical Path):**
+- [ ] Global R2 caching (all profiles)
+- [ ] Prompt caching (business context)
+- [ ] Full AI parallelization (DEEP/XRAY)
+- [ ] Async execution (Queue + Workers)
+
+### **Week 2 (Performance):**
+- [ ] Intelligent model selection
+- [ ] Cost tracker (Apify + AI)
+- [ ] Performance tracker (step-by-step)
+- [ ] Centralized config file
+
+### **Week 3 (Bulk):**
+- [ ] Apify-aware batching
+- [ ] Bulk job progress tracking
+- [ ] Real-time status updates
+
+### **Week 4 (Polish):**
+- [ ] Error handling improvements
+- [ ] Retry logic cleanup
+- [ ] Admin dashboard updates
+- [ ] Documentation
+
+---
+
+**This is your complete battle plan. Ready to execute?**
