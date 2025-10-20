@@ -1073,3 +1073,5 @@ console.log('Account statuses:', accounts);
 **END OF IMPLEMENTATION GUIDE**
 
 For SQL schema details, see original master plan documents.
+
+cloudflare handles cron jobs
