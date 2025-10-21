@@ -34,3 +34,29 @@ typescript{
     }
   ]
 }
+
+🚨 KEY CORRECTIONS FROM MY MISTAKES
+Mistake #1: Temperature Parameter
+❌ What I said: "GPT-5 only supports temperature=1"
+✅ Reality: GPT-5 does NOT support temperature at all - removed entirely
+Mistake #2: Parameters Location
+❌ What I showed:
+typescript{
+  model: "gpt-5",
+  messages: [...],
+  reasoning_effort: "medium"  // WRONG - flat structure
+}
+✅ Correct:
+typescript{
+  model: "gpt-5",
+  messages: [...],
+  parameters: {                // Nested under "parameters"
+    reasoning_effort: "medium"
+  }
+}
+Mistake #3: Token Limits
+❌ What I said: max_completion_tokens
+✅ Correct: max_output_tokens (different parameter name)
+Mistake #4: Response Format
+❌ What I said: JSON Schema goes in response_format
+⚠️ Reality: Need to verify if GPT-5 supports response_format or if it uses tools for structured output
