@@ -344,4 +344,4 @@ Build `/api/leads/analyze` - The core business logic
 
 ---
 
-**Ready to build `/api/leads/analyze`?** 🚀
+now ive built out up to phase 2 and im testing it currently
