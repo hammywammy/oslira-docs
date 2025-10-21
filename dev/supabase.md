@@ -1098,3 +1098,275 @@ console.log('Account statuses:', accounts);
 For SQL schema details, see original master plan documents.
 
 cloudflare handles cron jobs
+
+# Database Schema Documentation
+
+## account_members
+
+| Column Name | Data Type | Nullable | Default |
+|-------------|-----------|----------|---------|
+| id | uuid | NO | gen_random_uuid() |
+| account_id | uuid | NO | - |
+| user_id | uuid | NO | - |
+| role | text | YES | 'member'::text |
+| invited_by | uuid | YES | - |
+| joined_at | timestamp with time zone | YES | now() |
+| created_at | timestamp with time zone | YES | now() |
+
+## account_usage_summary
+
+| Column Name | Data Type | Nullable | Default |
+|-------------|-----------|----------|---------|
+| id | uuid | NO | gen_random_uuid() |
+| account_id | uuid | NO | - |
+| period_start | date | NO | - |
+| period_end | date | NO | - |
+| credits_used | integer | YES | 0 |
+| light_analyses_count | integer | YES | 0 |
+| deep_analyses_count | integer | YES | 0 |
+| total_analyses_count | integer | YES | 0 |
+| total_cost_cents | integer | YES | 0 |
+| is_finalized | boolean | YES | false |
+| created_at | timestamp with time zone | YES | now() |
+| updated_at | timestamp with time zone | YES | now() |
+
+## accounts
+
+| Column Name | Data Type | Nullable | Default |
+|-------------|-----------|----------|---------|
+| id | uuid | NO | gen_random_uuid() |
+| owner_id | uuid | NO | - |
+| name | text | NO | - |
+| slug | text | YES | - |
+| is_suspended | boolean | YES | false |
+| suspended_at | timestamp with time zone | YES | - |
+| suspended_reason | text | YES | - |
+| suspended_by | uuid | YES | - |
+| deleted_at | timestamp with time zone | YES | - |
+| created_at | timestamp with time zone | YES | now() |
+| updated_at | timestamp with time zone | YES | now() |
+
+## ai_usage_logs
+
+| Column Name | Data Type | Nullable | Default |
+|-------------|-----------|----------|---------|
+| id | uuid | NO | gen_random_uuid() |
+| account_id | uuid | NO | - |
+| analysis_id | uuid | YES | - |
+| provider | text | NO | - |
+| model | text | YES | - |
+| api_call_type | text | YES | - |
+| tokens_input | integer | YES | - |
+| tokens_output | integer | YES | - |
+| cost_cents | integer | NO | - |
+| duration_ms | integer | YES | - |
+| status | text | YES | - |
+| error_message | text | YES | - |
+| started_at | timestamp with time zone | YES | - |
+| completed_at | timestamp with time zone | YES | - |
+| created_at | timestamp with time zone | YES | now() |
+
+## analyses
+
+| Column Name | Data Type | Nullable | Default |
+|-------------|-----------|----------|---------|
+| id | uuid | NO | gen_random_uuid() |
+| lead_id | uuid | NO | - |
+| account_id | uuid | NO | - |
+| business_profile_id | uuid | YES | - |
+| requested_by | uuid | YES | - |
+| analysis_type | text | NO | - |
+| analysis_version | text | YES | - |
+| status | text | YES | 'pending'::text |
+| ai_response | jsonb | YES | - |
+| overall_score | integer | YES | - |
+| niche_fit_score | integer | YES | - |
+| engagement_score | integer | YES | - |
+| confidence_level | numeric | YES | - |
+| credits_charged | integer | YES | - |
+| total_cost_cents | integer | YES | - |
+| model_used | text | YES | - |
+| processing_duration_ms | integer | YES | - |
+| started_at | timestamp with time zone | YES | - |
+| completed_at | timestamp with time zone | YES | - |
+| deleted_at | timestamp with time zone | YES | - |
+| created_at | timestamp with time zone | YES | now() |
+
+## business_profiles
+
+| Column Name | Data Type | Nullable | Default |
+|-------------|-----------|----------|---------|
+| id | uuid | NO | gen_random_uuid() |
+| account_id | uuid | NO | - |
+| business_name | text | NO | - |
+| website | text | YES | - |
+| business_one_liner | text | YES | - |
+| business_context_pack | jsonb | YES | - |
+| context_version | text | YES | 'v1.0'::text |
+| context_generated_at | timestamp with time zone | YES | - |
+| context_manually_edited | boolean | YES | false |
+| context_updated_at | timestamp with time zone | YES | - |
+| deleted_at | timestamp with time zone | YES | - |
+| created_at | timestamp with time zone | YES | now() |
+| updated_at | timestamp with time zone | YES | now() |
+
+## credit_balances
+
+| Column Name | Data Type | Nullable | Default |
+|-------------|-----------|----------|---------|
+| account_id | uuid | NO | - |
+| current_balance | integer | NO | 0 |
+| last_transaction_at | timestamp with time zone | YES | - |
+| created_at | timestamp with time zone | YES | now() |
+| updated_at | timestamp with time zone | YES | now() |
+
+## credit_ledger
+
+| Column Name | Data Type | Nullable | Default |
+|-------------|-----------|----------|---------|
+| id | uuid | NO | gen_random_uuid() |
+| account_id | uuid | NO | - |
+| amount | integer | NO | - |
+| balance_after | integer | NO | - |
+| transaction_type | text | NO | - |
+| reference_type | text | YES | - |
+| reference_id | uuid | YES | - |
+| description | text | YES | - |
+| metadata | jsonb | YES | - |
+| created_by | uuid | YES | - |
+| created_at | timestamp with time zone | YES | now() |
+
+## leads
+
+| Column Name | Data Type | Nullable | Default |
+|-------------|-----------|----------|---------|
+| id | uuid | NO | gen_random_uuid() |
+| account_id | uuid | NO | - |
+| business_profile_id | uuid | YES | - |
+| instagram_username | text | NO | - |
+| display_name | text | YES | - |
+| profile_pic_url | text | YES | - |
+| profile_url | text | YES | - |
+| follower_count | integer | YES | - |
+| following_count | integer | YES | - |
+| post_count | integer | YES | - |
+| bio | text | YES | - |
+| external_url | text | YES | - |
+| is_verified | boolean | YES | false |
+| is_private | boolean | YES | false |
+| is_business_account | boolean | YES | false |
+| platform | text | YES | 'instagram'::text |
+| first_analyzed_at | timestamp with time zone | YES | - |
+| last_analyzed_at | timestamp with time zone | YES | - |
+| deleted_at | timestamp with time zone | YES | - |
+| created_at | timestamp with time zone | YES | now() |
+
+## plans
+
+| Column Name | Data Type | Nullable | Default |
+|-------------|-----------|----------|---------|
+| id | text | NO | - |
+| name | text | NO | - |
+| credits_per_month | integer | NO | - |
+| price_cents | integer | NO | - |
+| stripe_price_id | text | YES | - |
+| is_active | boolean | YES | true |
+| features | jsonb | YES | - |
+| created_at | timestamp with time zone | YES | now() |
+
+## platform_metrics_daily
+
+| Column Name | Data Type | Nullable | Default |
+|-------------|-----------|----------|---------|
+| id | uuid | NO | gen_random_uuid() |
+| metric_date | date | NO | - |
+| total_analyses_count | integer | YES | 0 |
+| light_analyses_count | integer | YES | 0 |
+| deep_analyses_count | integer | YES | 0 |
+| active_accounts_count | integer | YES | 0 |
+| new_accounts_count | integer | YES | 0 |
+| openai_calls_count | integer | YES | 0 |
+| anthropic_calls_count | integer | YES | 0 |
+| apify_calls_count | integer | YES | 0 |
+| openai_cost_cents | integer | YES | 0 |
+| anthropic_cost_cents | integer | YES | 0 |
+| apify_cost_cents | integer | YES | 0 |
+| total_cost_cents | integer | YES | 0 |
+| openai_avg_duration_ms | integer | YES | 0 |
+| anthropic_avg_duration_ms | integer | YES | 0 |
+| apify_avg_duration_ms | integer | YES | 0 |
+| openai_error_count | integer | YES | 0 |
+| anthropic_error_count | integer | YES | 0 |
+| apify_error_count | integer | YES | 0 |
+| credits_purchased_count | integer | YES | 0 |
+| revenue_cents | integer | YES | 0 |
+| profit_margin_cents | integer | YES | 0 |
+| daily_active_users | integer | YES | 0 |
+| avg_lead_score | numeric | YES | - |
+| high_quality_leads_count | integer | YES | 0 |
+| mrr_cents | integer | YES | 0 |
+| arr_cents | integer | YES | 0 |
+| customer_count | integer | YES | 0 |
+| created_at | timestamp with time zone | YES | now() |
+| updated_at | timestamp with time zone | YES | now() |
+
+## stripe_invoices
+
+| Column Name | Data Type | Nullable | Default |
+|-------------|-----------|----------|---------|
+| id | uuid | NO | gen_random_uuid() |
+| account_id | uuid | NO | - |
+| stripe_invoice_id | text | NO | - |
+| stripe_subscription_id | text | YES | - |
+| amount_cents | integer | NO | - |
+| currency | text | YES | 'usd'::text |
+| status | text | NO | - |
+| paid_at | timestamp with time zone | YES | - |
+| failed_at | timestamp with time zone | YES | - |
+| failure_reason | text | YES | - |
+| created_at | timestamp with time zone | YES | now() |
+
+## subscriptions
+
+| Column Name | Data Type | Nullable | Default |
+|-------------|-----------|----------|---------|
+| id | uuid | NO | gen_random_uuid() |
+| account_id | uuid | NO | - |
+| plan_type | text | NO | - |
+| price_cents | integer | NO | - |
+| stripe_customer_id | text | YES | - |
+| stripe_subscription_id | text | YES | - |
+| stripe_price_id | text | YES | - |
+| status | text | YES | 'active'::text |
+| current_period_start | timestamp with time zone | NO | - |
+| current_period_end | timestamp with time zone | NO | - |
+| canceled_at | timestamp with time zone | YES | - |
+| created_at | timestamp with time zone | YES | now() |
+
+## users
+
+| Column Name | Data Type | Nullable | Default |
+|-------------|-----------|----------|---------|
+| id | uuid | NO | - |
+| email | text | NO | - |
+| full_name | text | YES | - |
+| signature_name | text | YES | - |
+| avatar_url | text | YES | - |
+| onboarding_completed | boolean | YES | false |
+| is_admin | boolean | YES | false |
+| is_suspended | boolean | YES | false |
+| suspended_at | timestamp with time zone | YES | - |
+| suspended_reason | text | YES | - |
+| last_seen_at | timestamp with time zone | YES | - |
+| created_at | timestamp with time zone | YES | now() |
+| updated_at | timestamp with time zone | YES | now() |
+
+## webhook_events
+
+| Column Name | Data Type | Nullable | Default |
+|-------------|-----------|----------|---------|
+| stripe_event_id | text | NO | - |
+| event_type | text | NO | - |
+| account_id | uuid | YES | - |
+| processed_at | timestamp with time zone | YES | now() |
+| payload | jsonb | YES | - |
