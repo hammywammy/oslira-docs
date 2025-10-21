@@ -1054,146 +1054,619 @@ crons = [
 
 ---
 
-## 📋 IMPLEMENTATION PHASES
+# 📋 IMPLEMENTATION PHASES - REORDERED
 
-### **Phase 0: Foundation (Week 1)**
+## Phase 0: Foundation & Infrastructure Setup (Week 1)
 
-**Deliverables:**
-- Validate Cloudflare bindings (KV, R2, Workflows, Queues, DO)
-- Apply RLS fix to Supabase (wrap all `auth.uid()` calls)
+### **Deliverables:**
+
+**Project Bootstrap:**
+- Initialize new repository with proper structure
+- Configure `package.json`, `tsconfig.json`, `wrangler.toml`
+- Install all dependencies
+- Set up path aliases (@features, @core, @infrastructure, @shared)
+
+**Cloudflare Bindings Validation:**
+- Validate KV namespace accessible
+- Validate R2 bucket accessible
+- Validate Workflows binding configured
+- Validate Queues binding configured
+- Validate Durable Objects binding configured
+- Validate Analytics Engine binding configured
 - Health check endpoints with binding status
-- Verify SECURITY DEFINER on all RPC functions
-- Confirm AWS secrets caching works
 
-**Success Criteria:**
-- Worker boots without errors
-- All bindings accessible
-- Health check returns 200
-- Database queries 100x faster (450ms → 4ms)
+**AWS Secrets Integration:**
+- Implement secrets caching (5-minute TTL)
+- Test AWS Secrets Manager connection
+- Verify all required secrets exist:
+  - SUPABASE_URL
+  - SUPABASE_ANON_KEY
+  - SUPABASE_SERVICE_ROLE_KEY
+  - APIFY_API_TOKEN
+  - OPENAI_API_KEY
+  - ANTHROPIC_API_KEY
+  - STRIPE_SECRET_KEY
+  - STRIPE_WEBHOOK_SECRET
+  - SENTRY_DSN
 
----
+**Database Verification:**
+- Apply RLS fix to Supabase (wrap all `auth.uid()` calls in subqueries)
+- Verify `SECURITY DEFINER` on all RPC functions:
+  - `deduct_credits()`
+  - `get_renewable_subscriptions()`
+  - `generate_slug()`
+- Test RLS performance improvement (450ms → 4ms)
+- Verify indexes exist on critical columns
 
-### **Phase 1: Feature-First Architecture (Weeks 2-6)**
-
-**Build Order (validates pattern, then core product):**
-
-**Week 2 - Credits Feature:**
-```
-features/credits/
-├── domain/
-│   ├── credit-amount.vo.ts
-│   └── credit-calculator.service.ts
-├── application/
-│   ├── get-balance.usecase.ts
-│   ├── get-transactions.usecase.ts
-│   └── ports/credit.repository.interface.ts
-├── controllers/
-│   ├── balance.controller.ts
-│   └── transactions.controller.ts
-└── routes.ts
-```
-
-**Week 3 - Auth Feature:**
-```
-features/auth/
-├── domain/jwt-validator.service.ts
-├── application/verify-token.usecase.ts
-├── controllers/auth.controller.ts
-└── routes.ts
-```
-
-**Week 4 - Business Profiles Feature:**
-```
-features/business/
-├── domain/
-│   ├── business-profile.entity.ts
-│   └── icp-matcher.service.ts
-├── application/
-│   ├── create-profile.usecase.ts
-│   ├── update-profile.usecase.ts
-│   └── ports/business.repository.interface.ts
-├── controllers/profiles.controller.ts
-└── routes.ts
-```
-
-**Weeks 5-6 - Analysis Feature (Core Product):**
-```
-features/analysis/
-├── domain/
-│   ├── entities/
-│   │   ├── analysis.entity.ts
-│   │   └── lead.entity.ts
-│   ├── value-objects/
-│   │   ├── analysis-score.vo.ts
-│   │   └── instagram-handle.vo.ts
-│   └── services/
-│       └── lead-scorer.service.ts
-├── application/
-│   ├── use-cases/
-│   │   ├── analyze-lead.usecase.ts
-│   │   ├── bulk-analyze.usecase.ts
-│   │   └── anonymous-analyze.usecase.ts
-│   ├── ports/
-│   │   ├── ai-provider.interface.ts
-│   │   └── scraper.interface.ts
-│   └── dtos/analysis.dto.ts
-├── controllers/
-│   ├── analyze.controller.ts
-│   ├── bulk-analyze.controller.ts
-│   └── anonymous-analyze.controller.ts
-└── routes.ts
-```
+### **Success Criteria:**
+- ✅ Worker boots without errors
+- ✅ All bindings accessible and returning data
+- ✅ Health check returns 200 with binding status
+- ✅ AWS Secrets fetch working with caching
+- ✅ Database queries 100x faster (RLS fix applied)
+- ✅ All RPC functions have SECURITY DEFINER
 
 ---
 
-### **Phase 2: Infrastructure Adapters (Ongoing with Phase 1)**
+## Phase 1: Core Infrastructure Layer (Week 2)
+
+### **Build Order:**
 
 ```
 infrastructure/
+├── config/
+│   └── secrets.ts                  # AWS Secrets Manager with caching
 ├── database/
-│   ├── supabase.client.ts          # Dual client factory
+│   ├── supabase.client.ts          # Dual client factory (anon + service role)
 │   └── repositories/
-│       ├── base.repository.ts
-│       ├── credits.repository.ts
-│       ├── business.repository.ts
-│       ├── leads.repository.ts     # Includes upsertLead()
-│       └── analysis.repository.ts
+│       ├── base.repository.ts      # Abstract base with common methods
+│       ├── credits.repository.ts   # Credit operations
+│       ├── business.repository.ts  # Business profile CRUD
+│       ├── leads.repository.ts     # Lead upsert + queries
+│       └── analysis.repository.ts  # Analysis CRUD + status updates
 ├── ai/
-│   ├── openai.adapter.ts
-│   ├── claude.adapter.ts
-│   └── ai-gateway.client.ts
+│   ├── ai-gateway.client.ts        # Cloudflare AI Gateway wrapper
+│   ├── openai.adapter.ts           # OpenAI API calls with cost tracking
+│   ├── claude.adapter.ts           # Anthropic API calls with cost tracking
+│   └── pricing.config.ts           # AI model pricing constants
 ├── scraping/
-│   └── apify.adapter.ts
+│   └── apify.adapter.ts            # Apify Instagram scraper
 ├── cache/
-│   └── r2-cache.service.ts
+│   └── r2-cache.service.ts         # Profile caching with TTL
 └── monitoring/
-    ├── analytics-engine.client.ts
-    ├── sentry.client.ts
-    ├── cost-tracker.service.ts
-    └── performance-tracker.service.ts
+    ├── analytics-engine.client.ts  # Cloudflare Analytics Engine
+    ├── sentry.client.ts            # Error tracking (optional)
+    ├── cost-tracker.service.ts     # Track Apify + AI costs per request
+    └── performance-tracker.service.ts # Track step durations
 ```
+
+### **Key Implementations:**
+
+**Dual Supabase Client Factory:**
+- `createUserClient()` - Uses anon key, RLS enforced, for frontend-like queries
+- `createAdminClient()` - Uses service role, bypasses RLS, for system operations
+
+**Repository Pattern:**
+- Base repository with common CRUD operations
+- Type-safe query builders
+- Automatic error handling
+- Soft delete support (checks `deleted_at IS NULL`)
+
+**R2 Cache Service:**
+- Key structure: `instagram:${username}:v1`
+- TTL by analysis type (24h light, 12h deep, 6h xray)
+- Cache invalidation logic
+- Follower count change detection (>10% = invalidate)
+
+**AI Gateway Integration:**
+- Single configuration change for OpenAI/Claude
+- Automatic 30-40% cost savings
+- Fallback logic (OpenAI down → Claude)
+- Request/response logging
+
+**Cost & Performance Tracking:**
+- Track Apify duration and cost per scrape
+- Track AI tokens (input/output) and cost per call
+- Track step durations (identify bottlenecks)
+- Calculate profit margins per analysis
+
+### **Success Criteria:**
+- ✅ Can fetch secrets from AWS with caching
+- ✅ Can query database with both anon and service role clients
+- ✅ Can store and retrieve profiles from R2
+- ✅ Can make AI calls through AI Gateway
+- ✅ Can scrape Instagram profiles via Apify
+- ✅ Cost tracking captures all expenses per request
 
 ---
 
-### **Phase 3: Shared Layer (Weeks 2-3)**
+## Phase 2: Shared Utilities Layer (Week 2-3)
+
+### **Build Order:**
 
 ```
 shared/
 ├── middleware/
-│   ├── auth.middleware.ts          # JWT extraction
-│   ├── rate-limit.middleware.ts    # KV-based
-│   ├── error.middleware.ts         # Global handler
-│   └── analytics.middleware.ts     # Track every request
+│   ├── auth.middleware.ts          # JWT extraction and validation
+│   ├── rate-limit.middleware.ts    # KV-based rate limiting
+│   ├── error.middleware.ts         # Global error handler with Sentry
+│   └── analytics.middleware.ts     # Track every request to Analytics Engine
 ├── utils/
-│   ├── logger.util.ts
-│   ├── validation.util.ts
-│   └── response.util.ts
-└── types/
+│   ├── logger.util.ts              # Structured logging with levels
+│   ├── validation.util.ts          # Zod schema validators
+│   ├── response.util.ts            # Standard API response format
+│   └── id-generator.util.ts        # Generate run_id, lead_id, etc.
+├── types/
+│   ├── env.types.ts                # Cloudflare Worker Env interface
+│   ├── api.types.ts                # Request/response types
+│   ├── analysis.types.ts           # Analysis domain types
+│   └── database.types.ts           # Database table types
+└── constants/
+    ├── analysis.constants.ts       # Credit costs, model configs
+    └── errors.constants.ts         # Standard error messages
 ```
+
+### **Key Implementations:**
+
+**Auth Middleware:**
+- Extract JWT from Authorization header
+- Validate token with Supabase
+- Attach userId and accountId to context
+- Return 401 for invalid/expired tokens
+
+**Rate Limiting:**
+- Store request counts in KV
+- Key: `ratelimit:${userId}:${endpoint}`
+- Configurable limits per endpoint (e.g., 100 analyses/hour)
+- Return 429 with retry-after header
+
+**Error Middleware:**
+- Catch all unhandled errors
+- Classify errors (client 4xx vs server 5xx)
+- Log to Sentry (if configured)
+- Return standardized error response
+- Never expose internal details to client
+
+**Standard Response Format:**
+```typescript
+{
+  success: boolean,
+  data?: T,
+  error?: string,
+  requestId: string,
+  timestamp: string
+}
+```
+
+**Logger Utility:**
+- Structured JSON logging
+- Log levels: debug, info, warn, error
+- Include requestId in all logs
+- Performance-friendly (no blocking I/O)
+
+### **Success Criteria:**
+- ✅ Auth middleware correctly validates JWT
+- ✅ Rate limiting blocks excessive requests
+- ✅ Error middleware catches and formats all errors
+- ✅ Logger outputs structured JSON
+- ✅ All responses follow standard format
 
 ---
 
-### **Phase 4: Async Orchestration (Weeks 7-8)**
+## Phase 3: Domain Models & Configuration (Week 3)
+
+### **Build Order:**
+
+```
+features/analysis/domain/
+├── config/
+│   └── analysis.config.ts          # LIGHT, DEEP, XRAY configurations
+├── entities/
+│   ├── analysis.entity.ts          # Analysis domain entity
+│   └── lead.entity.ts              # Lead domain entity
+├── value-objects/
+│   ├── analysis-score.vo.ts        # Score validation (0-100)
+│   ├── instagram-handle.vo.ts      # Username validation
+│   └── analysis-type.vo.ts         # LIGHT/DEEP/XRAY enum
+└── services/
+    ├── lead-scorer.service.ts      # Score calculation logic
+    └── duplicate-checker.service.ts # Check for in-progress analyses
+```
+
+### **Analysis Configuration (Centralized):**
+
+```typescript
+export const ANALYSIS_CONFIG = {
+  LIGHT: {
+    credit_cost: 1,
+    price_usd: 0.97,
+    ai_model: 'gpt-4o-mini',
+    reasoning_effort: 'low',
+    cache_ttl_hours: 24,
+    posts_limit: 12
+  },
+  DEEP: {
+    credit_cost: 5,
+    price_usd: 4.85,
+    ai_models: {
+      core_strategy: 'gpt-5-mini',
+      outreach: 'gpt-5-mini',
+      personality: 'gpt-5-mini'
+    },
+    cache_ttl_hours: 12,
+    posts_limit: 50
+  },
+  XRAY: {
+    credit_cost: 6,
+    price_usd: 5.82,
+    ai_models: {
+      psychographic: 'gpt-5',
+      commercial: 'gpt-5-mini',
+      outreach: 'gpt-5-mini',
+      personality: 'gpt-5-mini'
+    },
+    cache_ttl_hours: 6,
+    posts_limit: 50
+  }
+} as const;
+```
+
+### **Domain Entities:**
+
+**Analysis Entity:**
+- Validation rules (score 0-100, valid status enum)
+- Business logic (canBeRefunded, isComplete, isFailed)
+- Immutability (can't change completed analysis)
+
+**Lead Entity:**
+- Instagram username validation
+- Follower count validation (>0)
+- Upsert logic (update if exists, insert if new)
+
+**Value Objects:**
+- Immutable, validated primitives
+- Self-documenting (e.g., InstagramHandle vs string)
+- Type safety at compile time
+
+### **Success Criteria:**
+- ✅ Analysis config centralized and type-safe
+- ✅ Domain entities enforce business rules
+- ✅ Value objects prevent invalid data
+- ✅ No business logic leaks into controllers
+
+---
+
+## Phase 4: Credits Feature (Week 4)
+
+### **Build Order:**
+
+```
+features/credits/
+├── domain/
+│   ├── credit-amount.vo.ts         # Positive/negative amount validation
+│   └── credit-calculator.service.ts # Calculate costs, refunds
+├── application/
+│   ├── get-balance.usecase.ts      # Fetch current balance
+│   ├── get-transactions.usecase.ts # Fetch transaction history
+│   └── ports/
+│       └── credit.repository.interface.ts # Repository contract
+├── controllers/
+│   ├── balance.controller.ts       # GET /credits/balance
+│   └── transactions.controller.ts  # GET /credits/transactions
+└── routes.ts                        # Register credit routes
+```
+
+### **Key Implementations:**
+
+**Get Balance Use Case:**
+- Query `credit_balances` table (fast)
+- Filter by accountId from JWT
+- Return current balance + metadata
+
+**Get Transactions Use Case:**
+- Query `credit_ledger` table with pagination
+- Filter by accountId from JWT
+- Order by created_at DESC
+- Include related user (who triggered transaction)
+
+**Credit Deduction (Backend Only):**
+- NEVER called from frontend directly
+- Always use `deduct_credits()` RPC function
+- Handled by Worker with service role key
+- Atomic operation (locks row, validates balance)
+
+### **API Endpoints:**
+
+```typescript
+GET /credits/balance
+Response: {
+  success: true,
+  data: {
+    current_balance: 48,
+    account_id: 'acc_123'
+  }
+}
+
+GET /credits/transactions?limit=50&offset=0
+Response: {
+  success: true,
+  data: {
+    transactions: [
+      {
+        id: 'tx_123',
+        amount: -2,
+        balance_after: 48,
+        transaction_type: 'analysis',
+        description: 'Deep analysis of @nike',
+        created_at: '2025-01-15T10:30:00Z'
+      }
+    ],
+    total_count: 247,
+    has_more: true
+  }
+}
+```
+
+### **Success Criteria:**
+- ✅ Balance endpoint returns correct balance
+- ✅ Transactions endpoint paginated correctly
+- ✅ RLS ensures users only see their account's data
+- ✅ Credits feature validates architecture pattern
+
+---
+
+## Phase 5: Auth Feature (Week 4)
+
+### **Build Order:**
+
+```
+features/auth/
+├── domain/
+│   └── jwt-validator.service.ts    # Validate JWT structure
+├── application/
+│   ├── verify-token.usecase.ts     # Verify with Supabase
+│   └── ports/
+│       └── auth.repository.interface.ts
+├── controllers/
+│   └── auth.controller.ts          # GET /auth/verify
+└── routes.ts
+```
+
+### **Key Implementations:**
+
+**JWT Validation:**
+- Extract token from Authorization header
+- Verify signature with Supabase
+- Decode payload (userId, accountId, role)
+- Return 401 if invalid/expired
+
+**Token Verification Use Case:**
+- Call Supabase auth.getUser()
+- Return user profile + account memberships
+- Cache result for 5 minutes (reduce Supabase calls)
+
+### **API Endpoint:**
+
+```typescript
+GET /auth/verify
+Headers: { Authorization: 'Bearer <jwt>' }
+Response: {
+  success: true,
+  data: {
+    user_id: 'user_123',
+    email: 'hamza@example.com',
+    accounts: [
+      {
+        account_id: 'acc_123',
+        role: 'owner',
+        credits: 48
+      }
+    ]
+  }
+}
+```
+
+### **Success Criteria:**
+- ✅ Valid JWT returns user data
+- ✅ Invalid JWT returns 401
+- ✅ Expired JWT returns 401
+- ✅ Middleware reuses auth logic
+
+---
+
+## Phase 6: Business Profiles Feature (Week 5)
+
+### **Build Order:**
+
+```
+features/business/
+├── domain/
+│   ├── business-profile.entity.ts  # Business profile domain model
+│   ├── icp-matcher.service.ts      # Match lead to ICP criteria
+│   └── value-objects/
+│       └── icp-criteria.vo.ts      # Follower range, engagement, etc.
+├── application/
+│   ├── use-cases/
+│   │   ├── create-profile.usecase.ts
+│   │   ├── update-profile.usecase.ts
+│   │   ├── get-profiles.usecase.ts
+│   │   └── delete-profile.usecase.ts
+│   └── ports/
+│       └── business.repository.interface.ts
+├── controllers/
+│   └── profiles.controller.ts      # CRUD endpoints
+└── routes.ts
+```
+
+### **Key Implementations:**
+
+**ICP Criteria:**
+- Follower range (min/max)
+- Engagement rate minimum
+- Content themes (array of strings)
+- Geographic focus
+- Industry/niche
+
+**Business Profile Entity:**
+- Validation (required fields)
+- Default values (brand_voice, outreach_goals)
+- Relationship to account (many profiles per account)
+
+**CRUD Operations:**
+- Create: Validate ICP criteria, generate slug
+- Read: List all profiles for account, get single profile
+- Update: Partial updates, preserve audit trail
+- Delete: Soft delete (set deleted_at)
+
+### **API Endpoints:**
+
+```typescript
+GET /business-profiles
+POST /business-profiles
+GET /business-profiles/:id
+PUT /business-profiles/:id
+DELETE /business-profiles/:id
+```
+
+### **Success Criteria:**
+- ✅ Can create business profile with ICP
+- ✅ Can list all profiles for account
+- ✅ Can update profile without breaking relationships
+- ✅ Soft delete preserves data integrity
+
+---
+
+## Phase 7: Analysis Feature - Core Product (Weeks 5-6)
+
+### **Build Order:**
+
+```
+features/analysis/
+├── domain/
+│   ├── entities/ (from Phase 3)
+│   ├── value-objects/ (from Phase 3)
+│   ├── services/
+│   │   ├── ai-analysis.service.ts      # All AI calls (LIGHT/DEEP/XRAY)
+│   │   ├── prompt-builder.service.ts   # Build prompts with caching
+│   │   └── result-parser.service.ts    # Parse JSON responses
+│   └── config/ (from Phase 3)
+├── application/
+│   ├── use-cases/
+│   │   ├── analyze-lead.usecase.ts     # Main analysis orchestration
+│   │   ├── bulk-analyze.usecase.ts     # Batch analysis
+│   │   ├── anonymous-analyze.usecase.ts # No auth required
+│   │   ├── get-analysis.usecase.ts     # Fetch results
+│   │   └── cancel-analysis.usecase.ts  # Cancel in-progress
+│   ├── ports/
+│   │   ├── ai-provider.interface.ts    # AI adapter contract
+│   │   └── scraper.interface.ts        # Scraper adapter contract
+│   └── dtos/
+│       └── analysis.dto.ts             # Request/response DTOs
+├── controllers/
+│   ├── analyze.controller.ts           # POST /v1/analyze
+│   ├── bulk-analyze.controller.ts      # POST /v1/bulk-analyze
+│   ├── anonymous-analyze.controller.ts # POST /v1/analyze-anonymous
+│   ├── results.controller.ts           # GET /runs/:run_id
+│   └── progress.controller.ts          # GET /runs/:run_id/progress
+└── routes.ts
+```
+
+### **Key Implementations:**
+
+**Analyze Lead Use Case (12-Step Flow):**
+1. Generate run_id
+2. Create pending record in `analyses` table
+3. Check duplicate analysis in progress (5min window)
+4. Check sufficient credits
+5. Deduct credits (atomic RPC call)
+6. Check R2 cache for profile
+7. Scrape profile via Apify (if cache miss)
+8. Store in R2 cache
+9. Run AI analysis (parallel calls for DEEP/XRAY)
+10. Upsert lead (update if exists, insert if new)
+11. Save analysis results to database
+12. Update status to 'complete'
+
+**AI Analysis Service:**
+- Build business context (800 tokens, cached)
+- Build profile data (dynamic, not cached)
+- Call appropriate model based on analysis type
+- Parse structured JSON response
+- Handle errors and retries
+
+**Prompt Builder:**
+- Separate cached vs non-cached sections
+- OpenAI auto-caches after 1024 tokens
+- Claude requires explicit cache_control markers
+- Include business context first for caching
+
+**Bulk Analysis:**
+- Batch usernames into groups of 10 (Apify limit)
+- Process batches sequentially
+- Track progress (completed/failed counts)
+- Refund credits on individual failures
+
+### **API Endpoints:**
+
+```typescript
+POST /v1/analyze
+Body: {
+  username: 'nike',
+  business_id: 'biz_123',
+  analysis_type: 'deep'
+}
+Response: {
+  success: true,
+  data: {
+    run_id: 'run_abc123',
+    status: 'queued',
+    estimated_time: '18-23s'
+  }
+}
+
+GET /runs/:run_id/progress
+Response: {
+  success: true,
+  data: {
+    run_id: 'run_abc123',
+    status: 'analyzing',
+    progress: 70,
+    current_step: 'Running AI analysis',
+    elapsed_ms: 12000
+  }
+}
+
+POST /v1/bulk-analyze
+Body: {
+  usernames: ['nike', 'adidas', 'puma'],
+  business_id: 'biz_123',
+  analysis_type: 'light'
+}
+Response: {
+  success: true,
+  data: {
+    batch_id: 'batch_xyz',
+    total: 3,
+    estimated_time: '60-90s'
+  }
+}
+```
+
+### **Success Criteria:**
+- ✅ LIGHT analysis completes in <11s (cold)
+- ✅ DEEP analysis completes in <25s (cold)
+- ✅ XRAY analysis completes in <25s (cold)
+- ✅ Cache hit rate >30% after 1 week
+- ✅ Credit deduction atomic (no race conditions)
+- ✅ Duplicate analysis check prevents double charge
+- ✅ Lead upsert works correctly
+- ✅ Bulk analysis processes batches correctly
+
+---
+
+## Phase 8: Async Orchestration (Weeks 7-8)
+
+### **Build Order:**
 
 ```
 core/workflows/
@@ -1203,119 +1676,632 @@ core/workflows/
 ├── bulk-analysis.workflow.ts
 └── steps/
     ├── check-duplicate.step.ts     # Prevent duplicate analyses
-    ├── scrape-profile.step.ts      # Retries on Apify failures
-    ├── run-ai-analysis.step.ts     # Full parallelization
-    └── save-results.step.ts
+    ├── check-cache.step.ts         # R2 cache lookup
+    ├── scrape-profile.step.ts      # Apify with retries
+    ├── run-ai-analysis.step.ts     # Parallel AI calls
+    ├── cache-profile.step.ts       # Store in R2
+    ├── upsert-lead.step.ts         # Update/insert lead
+    └── save-results.step.ts        # Write to database
 
 core/queues/
-├── stripe-webhook.consumer.ts      # Idempotency check before processing
-└── analysis.consumer.ts
+├── stripe-webhook.consumer.ts      # Process Stripe events
+└── analysis.consumer.ts            # Trigger workflows
 
 core/durable-objects/
-└── analysis-progress.do.ts         # Real-time progress + cancel
+└── analysis-progress.do.ts         # Real-time progress tracking
 ```
 
-**Workflow Pattern:**
+### **Workflow Pattern:**
+
+```typescript
+export class DeepAnalysisWorkflow extends WorkflowEntrypoint {
+  async run(event, step) {
+    const { run_id, username, account_id, business_id } = event.payload;
+    
+    // Get Durable Object for progress tracking
+    const progressTracker = getProgressTracker(run_id);
+    
+    // Step 1: Check duplicate
+    await updateProgress('queued', 5, 'Checking for duplicates');
+    const duplicate = await step.do('check_duplicate', ...);
+    if (duplicate) throw new Error('Already in progress');
+    
+    // Step 2: Check cache
+    await updateProgress('scraping', 10, 'Checking cache');
+    const cached = await step.do('check_cache', ...);
+    
+    // Step 3: Scrape (if cache miss)
+    let profile;
+    if (cached) {
+      profile = cached.profile;
+    } else {
+      await updateProgress('scraping', 25, 'Scraping profile');
+      profile = await step.do('scrape_profile', ...); // Retries on failure
+      await step.do('cache_profile', ...);
+    }
+    
+    // Step 4: Fetch business context
+    await updateProgress('analyzing', 40, 'Loading business context');
+    const business = await step.do('fetch_business', ...);
+    
+    // Step 5: AI analysis (parallel)
+    await updateProgress('analyzing', 50, 'Running AI (3 parallel calls)');
+    const [core, outreach, personality] = await step.do('ai_analysis', async () => {
+      return await Promise.all([
+        aiService.executeCoreStrategy(profile, business),
+        aiService.generateOutreach(profile, business),
+        aiService.analyzePersonality(profile)
+      ]);
+    });
+    
+    // Step 6: Upsert lead
+    await updateProgress('saving', 80, 'Saving lead');
+    const leadResult = await step.do('upsert_lead', ...);
+    
+    // Step 7: Save analysis
+    await updateProgress('saving', 90, 'Saving results');
+    await step.do('save_analysis', ...);
+    
+    // Complete
+    await updateProgress('complete', 100, 'Analysis complete');
+  }
+}
 ```
-1. Check cache (R2)
-2. Check duplicate analysis in progress
-3. Deduct credits (atomic RPC)
-4. Scrape profile (with retry)
-5. Run AI analysis (parallel calls)
-6. Cache result (R2)
-7. Upsert lead (not insert)
-8. Save analysis to database
-9. Update progress (Durable Object)
+
+### **Durable Object (Progress Tracker):**
+
+```typescript
+export class AnalysisProgressTracker extends DurableObject {
+  async fetch(request) {
+    const url = new URL(request.url);
+    
+    // GET /progress - Client polls
+    if (url.pathname === '/progress') {
+      const state = await this.ctx.storage.get('state');
+      return Response.json(state);
+    }
+    
+    // POST /update - Workflow updates
+    if (url.pathname === '/update') {
+      const update = await request.json();
+      await this.ctx.storage.put('state', update);
+      
+      // Set cleanup alarm if complete
+      if (['complete', 'failed'].includes(update.status)) {
+        await this.ctx.storage.setAlarm(Date.now() + 3600000);
+      }
+      
+      return Response.json({ ok: true });
+    }
+    
+    // POST /cancel - Client cancels
+    if (url.pathname === '/cancel') {
+      const state = await this.ctx.storage.get('state');
+      state.should_cancel = true;
+      await this.ctx.storage.put('state', state);
+      return Response.json({ ok: true });
+    }
+  }
+  
+  async alarm() {
+    // Cleanup after 1 hour
+    await this.ctx.storage.deleteAll();
+  }
+}
 ```
+
+### **Queue Consumers:**
+
+**Stripe Webhook Consumer:**
+- Check idempotency (webhook_events table)
+- Process event based on type:
+  - `invoice.paid` → Record payment
+  - `invoice.payment_failed` → Mark subscription past_due
+  - `customer.subscription.created` → Confirm subscription
+- Send to appropriate handler
+
+**Analysis Consumer:**
+- Receive analysis request from queue
+- Trigger appropriate workflow (LIGHT/DEEP/XRAY)
+- Handle workflow errors (refund credits)
+
+### **Success Criteria:**
+- ✅ Workflows complete without timeout (no 30s limit)
+- ✅ Durable Objects track progress in real-time
+- ✅ Client can poll progress every 2s
+- ✅ Client can cancel in-progress analysis
+- ✅ Stripe webhooks idempotent (no duplicate processing)
+- ✅ Infrastructure failures auto-retry
+- ✅ Business logic failures don't retry
 
 ---
 
-### **Phase 5: Observability (Week 9)**
+## Phase 9: Observability & Monitoring (Week 9)
+
+### **Build Order:**
 
 ```
 infrastructure/monitoring/
-├── analytics-engine.client.ts
-├── sentry.client.ts
-├── error-classifier.ts
-└── retry-strategies.ts
+├── analytics-engine.client.ts      # Cloudflare Analytics Engine
+├── sentry.client.ts                # Sentry error tracking
+├── error-classifier.ts             # Classify 4xx vs 5xx
+└── retry-strategies.ts             # Exponential backoff configs
 
 shared/middleware/
-└── analytics.middleware.ts
+└── analytics.middleware.ts         # Track every request
 ```
 
-**Analytics Engine Integration:**
+### **Analytics Engine Integration:**
+
 ```typescript
+// Track every analysis request
 env.ANALYTICS_ENGINE.writeDataPoint({
-  blobs: [run_id, username, analysisType],
-  doubles: [cost, duration_ms, score],
-  indexes: [userId, accountId]
+  blobs: [run_id, username, analysisType, userId, accountId],
+  doubles: [cost, duration_ms, score, cache_hit ? 1 : 0],
+  indexes: [accountId]
+});
+
+// Track every API endpoint
+env.ANALYTICS_ENGINE.writeDataPoint({
+  blobs: [endpoint, method, status, userId],
+  doubles: [duration_ms, response_size],
+  indexes: [status]
 });
 ```
 
-**Queries:**
-- Which users drive 80% of AI costs?
-- P95 latency per endpoint
+### **Key Metrics to Track:**
+
+**Performance:**
+- P50, P95, P99 latency per endpoint
+- Analysis duration by type (LIGHT/DEEP/XRAY)
 - Cache hit rate over time
-- Analysis success rate
+- Apify scraping duration
+- AI call duration per model
+
+**Cost:**
+- Total cost per analysis (Apify + AI)
+- Cost breakdown by provider (OpenAI, Anthropic, Apify)
+- Cost per user/account
+- Margin per analysis type
+
+**Usage:**
+- Analyses per day/week/month
+- Most analyzed profiles (top 100)
+- Busiest accounts (top 20)
+- Analysis type distribution (LIGHT vs DEEP vs XRAY)
+
+**Reliability:**
+- Success rate per analysis type
+- Failure reasons (out of credits, duplicate, timeout, scrape failed, AI error)
+- Retry counts per step
+- Refund frequency
+
+### **Queries to Build:**
+
+```typescript
+// Which accounts drive 80% of AI costs?
+SELECT account_id, SUM(cost) as total_cost
+FROM analytics
+WHERE blob1 = 'analysis'
+GROUP BY account_id
+ORDER BY total_cost DESC
+LIMIT 20;
+
+// P95 latency per endpoint
+SELECT blob1 as endpoint, PERCENTILE_CONT(0.95) as p95_ms
+FROM analytics
+WHERE blob1 LIKE '/v1/%'
+GROUP BY endpoint;
+
+// Cache hit rate over time
+SELECT DATE(timestamp) as date,
+  SUM(CASE WHEN double4 = 1 THEN 1 ELSE 0 END) / COUNT(*) as hit_rate
+FROM analytics
+WHERE blob1 = 'analysis'
+GROUP BY DATE(timestamp);
+```
+
+### **Success Criteria:**
+- ✅ All requests logged to Analytics Engine
+- ✅ Cost tracking accurate within 1%
+- ✅ Can query P95 latency per endpoint
+- ✅ Can identify top cost drivers
+- ✅ Errors logged to Sentry with context
 
 ---
 
-### **Phase 6: Cron Jobs (Week 10)**
+## Phase 10: Cron Jobs (Week 10)
+
+### **Build Order:**
 
 ```
 core/cron/
 ├── monthly-renewal.job.ts          # 1st of month, 3 AM UTC
 ├── daily-cleanup.job.ts            # Daily, 2 AM UTC
 ├── failed-analysis-cleanup.job.ts  # Hourly
-├── subscription-sync.job.ts        # Every 6 hours (optional)
-└── invoice-reconciliation.job.ts   # Daily, 4 AM UTC (optional)
+└── subscription-sync.job.ts        # Every 6 hours (optional)
 ```
 
-**Must-Have Cron Jobs:**
+### **wrangler.toml Configuration:**
 
-1. **Monthly Credit Renewal:**
-   - Query `get_renewable_subscriptions()` RPC
-   - Call `deduct_credits()` with **positive amount** (grants credits)
-   - Update subscription period (advance 1 month)
-   - Track: total processed, success/failure counts
-   - Idempotency: Check credit_ledger for duplicate grant within 23 hours
+```toml
+[triggers]
+crons = [
+  "0 3 1 * *",   # Monthly renewal
+  "0 2 * * *",   # Daily cleanup
+  "0 * * * *"    # Hourly failed analysis cleanup
+]
+```
 
-2. **Daily Cleanup:**
-   - Delete `ai_usage_logs` older than 90 days
-   - Hard-delete soft-deleted records older than 30 days
-   - Track: rows deleted per table
+### **Monthly Credit Renewal:**
 
-3. **Failed Analysis Cleanup:**
-   - Find analyses stuck in pending/processing >5 minutes
-   - Mark as failed
-   - Refund credits via `deduct_credits()`
+```typescript
+export async function monthlyRenewalJob(env) {
+  // 1. Get renewable subscriptions
+  const { data: subs } = await supabaseAdmin
+    .rpc('get_renewable_subscriptions');
+  
+  let succeeded = 0, failed = 0;
+  
+  for (const sub of subs) {
+    // 2. Idempotency check (23-hour window)
+    const recentRenewal = await checkRecentRenewal(sub.account_id);
+    if (recentRenewal) {
+      succeeded++;
+      continue;
+    }
+    
+    try {
+      // 3. Grant credits
+      await supabaseAdmin.rpc('deduct_credits', {
+        p_account_id: sub.account_id,
+        p_amount: sub.credits_per_period, // Positive = grant
+        p_operation_type: 'subscription_renewal',
+        p_description: `Monthly ${sub.plan_name} renewal`
+      });
+      
+      // 4. Advance subscription period
+      const newEnd = new Date(sub.current_period_end);
+      newEnd.setMonth(newEnd.getMonth() + 1);
+      
+      await supabaseAdmin
+        .from('subscriptions')
+        .update({
+          current_period_start: sub.current_period_end,
+          current_period_end: newEnd.toISOString()
+        })
+        .eq('id', sub.id);
+      
+      succeeded++;
+    } catch (error) {
+      console.error(`Renewal failed for ${sub.id}:`, error);
+      failed++;
+    }
+  }
+  
+  console.log(`Renewed ${succeeded}/${subs.length}, ${failed} failed`);
+}
+```
+
+### **Daily Cleanup:**
+
+```typescript
+export async function dailyCleanupJob(env) {
+  // 1. Delete old AI logs (>90 days)
+  await supabaseAdmin
+    .from('ai_usage_logs')
+    .delete()
+    .lt('created_at', ninetyDaysAgo());
+  
+  // 2. Hard-delete soft-deleted records (>30 days)
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  
+  await supabaseAdmin
+    .from('analyses')
+    .delete()
+    .lt('deleted_at', thirtyDaysAgo);
+  
+  await supabaseAdmin
+    .from('leads')
+    .delete()
+    .lt('deleted_at', thirtyDaysAgo);
+  
+  // ... other tables
+}
+```
+
+### **Failed Analysis Cleanup:**
+
+```typescript
+export async function failedAnalysisCleanupJob(env) {
+  // Find stuck analyses (>5 minutes in pending/processing)
+  const { data: stuck } = await supabaseAdmin
+    .from('analyses')
+    .select('id, account_id, credits_used')
+    .in('status', ['pending', 'processing'])
+    .lt('created_at', fiveMinutesAgo());
+  
+  for (const analysis of stuck) {
+    // Mark as failed
+    await supabaseAdmin
+      .from('analyses')
+      .update({
+        status: 'failed',
+        error_message: 'Analysis timed out after 5 minutes'
+      })
+      .eq('id', analysis.id);
+    
+    // Refund credits
+    await supabaseAdmin.rpc('deduct_credits', {
+      p_account_id: analysis.account_id,
+      p_amount: -analysis.credits_used, // Negative = refund
+      p_operation_type: 'timeout_refund',
+      p_description: 'Auto-refund for timed out analysis'
+    });
+  }
+}
+```
+
+### **Success Criteria:**
+- ✅ Monthly renewal grants credits correctly
+- ✅ Idempotency prevents double renewal
+- ✅ Daily cleanup deletes old data
+- ✅ Failed analyses refunded within 5 minutes
+- ✅ Cron jobs logged to Analytics Engine
 
 ---
 
-### **Phase 7: Testing (Week 10)**
+## Phase 11: Testing (Week 10-11)
+
+### **Build Order:**
 
 ```
 tests/
 ├── unit/
 │   ├── features/
-│   │   ├── credits/domain/*.test.ts
-│   │   ├── auth/application/*.test.ts
-│   │   └── analysis/domain/*.test.ts
+│   │   ├── credits/domain/credit-amount.vo.test.ts
+│   │   ├── auth/application/verify-token.usecase.test.ts
+│   │   ├── analysis/domain/lead-scorer.service.test.ts
+│   │   └── business/domain/icp-matcher.service.test.ts
 │   └── infrastructure/
-│       └── database/*.test.ts
+│       ├── database/repositories/credits.repository.test.ts
+│       └── cache/r2-cache.service.test.ts
 ├── integration/
 │   ├── credits/balance-endpoint.test.ts
-│   └── analysis/analyze-endpoint.test.ts
+│   ├── analysis/analyze-endpoint.test.ts
+│   └── business/crud-endpoints.test.ts
 └── e2e/
-    └── analysis-workflow.test.ts
+    ├── full-analysis-workflow.test.ts
+    └── bulk-analysis-workflow.test.ts
 ```
 
-**Testing Strategy:**
-- Vitest with `@cloudflare/vitest-pool-workers`
-- Domain layer: 100% coverage
-- Application layer: 90% coverage
-- Infrastructure: 70% coverage
-- Integration tests for key flows
+### **Testing Strategy:**
+
+**Unit Tests (Domain Layer - 100% coverage):**
+- Value objects validation
+- Entity business logic
+- Domain services (scoring, matching)
+- Pure functions (no I/O)
+
+**Unit Tests (Infrastructure - 70% coverage):**
+- Repository methods (mock Supabase)
+- Cache service (mock R2)
+- AI adapters (mock OpenAI/Claude)
+- Cost tracking (mock responses)
+
+**Integration Tests (Key Flows - 90% coverage):**
+- Credit balance endpoint (with test DB)
+- Analysis creation endpoint (with test DB)
+- Workflow steps (with mocked external APIs)
+
+**E2E Tests (Critical Paths):**
+- Full LIGHT analysis (scrape → AI → save)
+- Full DEEP analysis (parallel AI calls)
+- Bulk analysis (10 profiles)
+- Credit deduction + refund flow
+
+### **Test Configuration:**
+
+```typescript
+// vitest.config.ts
+export default defineConfig({
+  test: {
+    pool: '@cloudflare/vitest-pool-workers',
+    poolOptions: {
+      workers: {
+        miniflare: {
+          bindings: {
+            // Mock bindings for tests
+          }
+        }
+      }
+    }
+  }
+});
+```
+
+### **Example Test:**
+
+```typescript
+// tests/unit/features/credits/domain/credit-amount.vo.test.ts
+import { describe, it, expect } from 'vitest';
+import { CreditAmount } from '@/features/credits/domain/credit-amount.vo';
+
+describe('CreditAmount Value Object', () => {
+  it('should create valid positive amount', () => {
+    const amount = new CreditAmount(10);
+    expect(amount.value).toBe(10);
+    expect(amount.isPositive()).toBe(true);
+  });
+  
+  it('should create valid negative amount', () => {
+    const amount = new CreditAmount(-5);
+    expect(amount.value).toBe(-5);
+    expect(amount.isNegative()).toBe(true);
+  });
+  
+  it('should reject zero amount', () => {
+    expect(() => new CreditAmount(0)).toThrow('Amount cannot be zero');
+  });
+  
+  it('should reject decimal amount', () => {
+    expect(() => new CreditAmount(1.5)).toThrow('Amount must be integer');
+  });
+});
+```
+
+### **Success Criteria:**
+- ✅ Domain layer: 100% coverage
+- ✅ Application layer: 90% coverage
+- ✅ Infrastructure layer: 70% coverage
+- ✅ All critical paths have E2E tests
+- ✅ Tests run in <30 seconds
+- ✅ CI/CD blocks deployment on test failure
+
+---
+
+## ✅ IMPLEMENTATION CHECKLIST
+
+### **Phase 0: Foundation ✅**
+- [ ] Repository initialized with proper structure
+- [ ] All dependencies installed
+- [ ] `wrangler.toml`, `tsconfig.json`, `package.json` configured
+- [ ] Cloudflare bindings validated (KV, R2, Workflows, Queues, DO, Analytics)
+- [ ] AWS Secrets Manager working with caching
+- [ ] Supabase RLS performance fix applied (auth.uid() wrapped)
+- [ ] All RPC functions have SECURITY DEFINER verified
+- [ ] Health check endpoint returns 200 with binding status
+
+### **Phase 1: Core Infrastructure ✅**
+- [ ] AWS Secrets caching implemented
+- [ ] Dual Supabase client factory (anon + service role)
+- [ ] All repositories implemented (credits, business, leads, analysis)
+- [ ] R2 cache service with TTL logic
+- [ ] AI Gateway integration (OpenAI + Claude)
+- [ ] Apify adapter with retry logic
+- [ ] Cost tracker captures all expenses
+- [ ] Performance tracker measures step durations
+
+### **Phase 2: Shared Utilities ✅**
+- [ ] Auth middleware validates JWT
+- [ ] Rate limiting middleware (KV-based)
+- [ ] Error middleware catches and formats errors
+- [ ] Analytics middleware tracks all requests
+- [ ] Logger utility outputs structured JSON
+- [ ] Standard response format applied everywhere
+- [ ] ID generator utility for run_id, lead_id
+
+### **Phase 3: Domain Models ✅**
+- [ ] Analysis config centralized (LIGHT/DEEP/XRAY)
+- [ ] Analysis entity with business logic
+- [ ] Lead entity with validation
+- [ ] Value objects (score, handle, type)
+- [ ] Domain services (scorer, duplicate checker)
+
+### **Phase 4: Credits Feature ✅**
+- [ ] GET /credits/balance endpoint
+- [ ] GET /credits/transactions endpoint
+- [ ] Credit balance returns correct value
+- [ ] Transaction history paginated
+- [ ] RLS ensures users only see own data
+
+### **Phase 5: Auth Feature ✅**
+- [ ] JWT validation service
+- [ ] Token verification use case
+- [ ] GET /auth/verify endpoint
+- [ ] Middleware reuses auth logic
+
+### **Phase 6: Business Profiles ✅**
+- [ ] Business profile entity with ICP
+- [ ] CRUD endpoints (create, read, update, delete)
+- [ ] Soft delete preserves relationships
+- [ ] ICP matcher service
+
+### **Phase 7: Analysis Feature ✅**
+- [ ] 12-step analysis flow implemented
+- [ ] POST /v1/analyze endpoint
+- [ ] POST /v1/bulk-analyze endpoint
+- [ ] GET /runs/:run_id endpoint
+- [ ] GET /runs/:run_id/progress endpoint
+- [ ] AI analysis service (LIGHT/DEEP/XRAY)
+- [ ] Prompt builder with caching
+- [ ] Duplicate check prevents double charge
+- [ ] Lead upsert works correctly
+- [ ] Cache hit rate tracking
+
+### **Phase 8: Async Orchestration ✅**
+- [ ] LIGHT analysis workflow
+- [ ] DEEP analysis workflow
+- [ ] XRAY analysis workflow
+- [ ] Bulk analysis workflow
+- [ ] Durable Object progress tracker
+- [ ] Stripe webhook queue consumer
+- [ ] Analysis queue consumer
+- [ ] Workflow steps modularized
+- [ ] Cancel functionality works
+
+### **Phase 9: Observability ✅**
+- [ ] Analytics Engine tracking all requests
+- [ ] Cost metrics accurate
+- [ ] Performance metrics captured
+- [ ] Sentry error tracking configured
+- [ ] Can query P95 latency
+- [ ] Can identify top cost drivers
+
+### **Phase 10: Cron Jobs ✅**
+- [ ] Monthly renewal job (1st, 3 AM UTC)
+- [ ] Daily cleanup job (2 AM UTC)
+- [ ] Failed analysis cleanup (hourly)
+- [ ] Idempotency checks working
+- [ ] Jobs logged to Analytics Engine
+
+### **Phase 11: Testing ✅**
+- [ ] Domain unit tests (100% coverage)
+- [ ] Application unit tests (90% coverage)
+- [ ] Infrastructure unit tests (70% coverage)
+- [ ] Integration tests for key flows
+- [ ] E2E tests for critical paths
+- [ ] All tests passing
+- [ ] Test suite runs in <30s
+
+---
+
+## 🚀 DEPLOYMENT CHECKLIST
+
+### **Pre-Deployment:**
+- [ ] All phases complete
+- [ ] All tests passing
+- [ ] Staging deployment successful
+- [ ] Load testing completed
+- [ ] Security audit passed
+- [ ] Database migrations applied
+- [ ] AWS Secrets populated
+- [ ] Cloudflare bindings configured
+
+### **Deployment:**
+- [ ] Deploy to production: `npm run deploy`
+- [ ] Verify health check: `curl https://api.oslira.com/health`
+- [ ] Test analysis endpoint with test account
+- [ ] Verify cron jobs scheduled
+- [ ] Check Analytics Engine receiving data
+- [ ] Monitor errors in Sentry
+
+### **Post-Deployment:**
+- [ ] Monitor performance for 24 hours
+- [ ] Verify cache hit rate increasing
+- [ ] Check cost tracking accurate
+- [ ] Confirm no duplicate analyses
+- [ ] Validate credit deductions atomic
+- [ ] Test cancel functionality
+
+---
+
+**Total Implementation Time: 10-11 Weeks**
+
+**Phases 0-3:** Weeks 1-3 (Foundation + Infrastructure + Shared + Domain)  
+**Phases 4-7:** Weeks 4-6 (Features: Credits, Auth, Business, Analysis)  
+**Phases 8-10:** Weeks 7-10 (Async + Observability + Cron)  
+**Phase 11:** Week 10-11 (Testing)
 
 ---
 
