@@ -309,3 +309,5 @@ WHERE routine_schema = 'public'
 ---
 
 **Ready to start Phase 1?** Say: "Start Phase 1"
+
+Now ive finished up to phase 1 still currently testing r2 and supabsae level stuff
