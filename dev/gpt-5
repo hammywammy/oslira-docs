@@ -1,0 +1,36 @@
+📘 GPT-5 API CLARIFICATIONS
+Status: Production Reference
+Last Updated: 2025-10-21
+Source: Official GPT-5 API Documentation
+
+✅ CORRECTED GPT-5 REQUEST STRUCTURE
+Based on the official documentation you provided, here's the accurate API structure:
+Required Fields
+typescript{
+  model: "gpt-5",
+  
+  // ONE OF THESE (not both):
+  input: "single string prompt"     // Simple use case
+  // OR
+  messages: [                       // Chat-based (preferred)
+    { role: "system", content: "..." },
+    { role: "user", content: "..." }
+  ]
+}
+Optional Parameters
+typescript{
+  parameters: {
+    max_output_tokens: 2000,        // Max response length
+    verbosity: "low" | "medium" | "high",
+    reasoning_effort: "minimal" | "low" | "medium" | "high"
+  },
+  
+  tools: [                          // External tool definitions
+    {
+      name: "tool_name",
+      type: "custom",
+      description: "What this tool does",
+      parameters: { ... }
+    }
+  ]
+}
