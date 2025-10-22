@@ -503,3 +503,385 @@ MANUAL LOGOUT:
 ---
 
 **Next Step:** Build the 4 core files based on this logic.
+
+
+Actual plan:
+
+# ✅ **AGREED - 25 Credits Upfront, Simple and Clean**
+
+You're absolutely right. Let's strip away the complexity and build what actually works.
+
+---
+
+## **🎯 THE CORRECT ARCHITECTURE (No BS)**
+
+```
+1. Google OAuth Success
+   ↓
+2. POST /api/auth/complete-signup (Worker)
+   ATOMIC TRANSACTION (via application logic, not DB function):
+   ✅ Create user record
+   ✅ Create account (owner_id, name)
+   ✅ Create account_membership (owner role)
+   ✅ Grant 25 credits IMMEDIATELY (one-time, protected by unique constraint)
+   ✅ Set onboarding_completed = false
+   ✅ Return JWT + account_id
+   
+   Stripe customer creation: ASYNC (separate job, non-critical path)
+   ↓
+3. /callback (Frontend)
+   GET /api/auth/session
+   Checks: onboarding_completed?
+   → FALSE → Redirect /onboarding
+   ↓
+4. Onboarding Form (Required, but resumable)
+   Step 1: Business name, website
+   Step 2: Target audience (ICP)
+   Step 3: Analysis goals
+   
+   Each step saves to partial business_profile
+   ↓
+5. POST /api/onboarding/complete
+   
+   IDEMPOTENT CHECK:
+   if (user.onboarding_completed === true) {
+     return success; // Already done, no-op
+   }
+   
+   ATOMIC TRANSACTION (application layer):
+   ✅ Finalize business_profile
+   ✅ Set onboarding_completed = true
+   ✅ Log completion event
+   
+   ASYNC (non-blocking):
+   - Update Stripe customer metadata
+   - Send welcome email
+   ↓
+6. /dashboard
+   User has 25 credits, ready to analyze
+```
+
+---
+
+## **WHY THIS IS CORRECT**
+
+### **✅ No Credit Inflation**
+- **One grant, ever:** Protected by `users.id` unique constraint
+- **No "rewards":** User gets 25 credits during signup, uses them after onboarding
+- **Simple mental model:** "Sign up → Get 25 credits → Learn how to use them → Use them"
+
+### **✅ Application-Layer Transactions (Not DB Functions)**
+```typescript
+// Worker handles orchestration, not database
+export async function completeSignup(c: Context) {
+  const { userId, email, fullName } = await validateOAuth(c);
+  
+  // Check if already exists
+  const existing = await db.users.findUnique({ where: { id: userId } });
+  if (existing) {
+    return success({ account_id: existing.account_id });
+  }
+  
+  // Application-layer transaction (NOT database function)
+  const account = await db.accounts.create({
+    data: {
+      owner_id: userId,
+      name: `${fullName}'s Account`,
+      slug: generateSlug(fullName)
+    }
+  });
+  
+  await db.users.create({
+    data: {
+      id: userId,
+      email,
+      full_name: fullName,
+      onboarding_completed: false
+    }
+  });
+  
+  await db.account_members.create({
+    data: {
+      account_id: account.id,
+      user_id: userId,
+      role: 'owner'
+    }
+  });
+  
+  // Grant 25 credits (via RPC for atomic balance update)
+  await db.rpc('deduct_credits', {
+    account_id: account.id,
+    amount: 25,
+    type: 'signup_bonus',
+    description: 'Initial signup credits'
+  });
+  
+  // Async Stripe (non-blocking)
+  c.executionCtx.waitUntil(
+    createStripeCustomer(userId, email, account.id)
+  );
+  
+  return success({ account_id: account.id, credits: 25 });
+}
+```
+
+### **✅ Idempotency Without Complexity**
+```typescript
+// Simple flag check is sufficient
+export async function completeOnboarding(c: Context) {
+  const auth = getAuthContext(c);
+  const body = await validateOnboardingData(c);
+  
+  // Idempotent check (critical)
+  const user = await db.users.findUnique({ 
+    where: { id: auth.userId } 
+  });
+  
+  if (user.onboarding_completed) {
+    // Already done - return success, don't error
+    return success({ 
+      message: 'Onboarding already completed',
+      account_id: user.account_id 
+    });
+  }
+  
+  // Update business profile
+  await db.business_profiles.upsert({
+    where: { account_id: auth.accountId },
+    create: {
+      account_id: auth.accountId,
+      business_name: body.business_name,
+      website: body.website,
+      business_one_liner: body.one_liner,
+      business_context_pack: body.context_pack
+    },
+    update: {
+      business_name: body.business_name,
+      website: body.website,
+      business_one_liner: body.one_liner,
+      business_context_pack: body.context_pack
+    }
+  });
+  
+  // Mark onboarding complete
+  await db.users.update({
+    where: { id: auth.userId },
+    data: {
+      onboarding_completed: true,
+      onboarding_completed_at: new Date()
+    }
+  });
+  
+  // Async operations (non-blocking)
+  c.executionCtx.waitUntil(
+    updateStripeMetadata(auth.accountId, body)
+  );
+  
+  return success({ message: 'Onboarding complete' });
+}
+```
+
+### **✅ No Queue System Needed (Use Cloudflare waitUntil)**
+```typescript
+// Built-in to Cloudflare Workers
+c.executionCtx.waitUntil(
+  async () => {
+    try {
+      await stripe.customers.create({...});
+    } catch (error) {
+      await logToSentry(error);
+      // Cron job will retry later
+    }
+  }
+);
+```
+
+### **✅ RLS Policy (Database Enforces Onboarding)**
+```sql
+-- Users must complete onboarding to create analyses
+CREATE POLICY "require_onboarding_for_analysis"
+ON analyses
+FOR INSERT
+TO authenticated
+WITH CHECK (
+  EXISTS (
+    SELECT 1 FROM users
+    WHERE users.id = auth.uid()
+    AND users.onboarding_completed = true
+  )
+);
+
+-- Same for leads
+CREATE POLICY "require_onboarding_for_leads"
+ON leads
+FOR INSERT
+TO authenticated
+WITH CHECK (
+  EXISTS (
+    SELECT 1 FROM users
+    WHERE users.id = auth.uid()
+    AND users.onboarding_completed = true
+  )
+);
+```
+
+---
+
+## **🚀 FRONTEND IMPLEMENTATION**
+
+### **1. Worker API Client**
+```typescript
+// src/core/api/worker-client.ts
+import { ENV } from '@/core/config/env';
+
+class WorkerAPIClient {
+  private baseURL: string;
+  private token: string | null = null;
+
+  constructor() {
+    this.baseURL = ENV.apiUrl; // https://api.oslira.com
+    this.token = localStorage.getItem('auth_token');
+  }
+
+  async request<T>(
+    endpoint: string,
+    options: RequestInit = {}
+  ): Promise<T> {
+    const url = `${this.baseURL}${endpoint}`;
+    
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(this.token && { Authorization: `Bearer ${this.token}` }),
+      ...options.headers,
+    };
+
+    const response = await fetch(url, {
+      ...options,
+      headers,
+    });
+
+    // Handle 401 (token expired)
+    if (response.status === 401) {
+      // Try token refresh
+      const refreshed = await this.refreshToken();
+      if (refreshed) {
+        // Retry with new token
+        return this.request(endpoint, options);
+      } else {
+        // Force re-login
+        localStorage.removeItem('auth_token');
+        window.location.href = '/auth/login';
+        throw new Error('Authentication required');
+      }
+    }
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Request failed');
+    }
+
+    return data;
+  }
+
+  async refreshToken(): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.baseURL}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: this.token }),
+      });
+
+      if (response.ok) {
+        const { token } = await response.json();
+        this.setToken(token);
+        return true;
+      }
+    } catch {
+      // Refresh failed
+    }
+    return false;
+  }
+
+  setToken(token: string) {
+    this.token = token;
+    localStorage.setItem('auth_token', token);
+  }
+
+  clearToken() {
+    this.token = null;
+    localStorage.removeItem('auth_token');
+  }
+
+  // Auth endpoints
+  async completeSignup(code: string) {
+    return this.request('/api/auth/complete-signup', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    });
+  }
+
+  async getSession() {
+    return this.request('/api/auth/session');
+  }
+
+  async logout() {
+    await this.request('/api/auth/logout', { method: 'POST' });
+    this.clearToken();
+  }
+
+  // Onboarding endpoints
+  async saveOnboardingProgress(step: string, data: any) {
+    return this.request('/api/onboarding/save-progress', {
+      method: 'POST',
+      body: JSON.stringify({ step, data }),
+    });
+  }
+
+  async completeOnboarding(data: any) {
+    return this.request('/api/onboarding/complete', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getOnboardingProgress() {
+    return this.request('/api/onboarding/progress');
+  }
+}
+
+export const workerAPI = new WorkerAPIClient();
+```
+
+### **2. Auth Provider (Rewritten for Worker)**
+```typescript
+// src/features/auth/contexts/AuthProvider.tsx
+import { createContext, useContext, useEffect, useState } from 'react';
+import { workerAPI } from '@/core/api/worker-client';
+
+interface AuthState {
+  user: User | null;
+  account: Account | null;
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  onboardingCompleted: boolean;
+}
+
+const AuthContext = createContext<AuthState | null>(null);
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [state, setState] = useState<AuthState>({
+    user: null,
+    account: null,
+    isAuthenticated: false,
+    isLoading: true,
+    onboardingCompleted: false,
+  });
+
+  useEffect(() => {
+    loadSession();
+  }, []);
+
+  async function loadSession() {
+    try {
+      const session = await workerAPI.getSession
