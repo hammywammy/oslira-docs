@@ -885,3 +885,115 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   async function loadSession() {
     try {
       const session = await workerAPI.getSession
+
+
+brief overview:
+
+# 🎯 **BUILD ORDER: Start to Finish**
+
+---
+
+## **PHASE 1: DATABASE (Foundation)**
+Build database schema + atomic transaction function
+
+**Files:**
+1. SQL migration: `refresh_tokens` table
+2. SQL migration: Add `onboarding_completed` to `users` 
+3. SQL function: `create_account_atomic()` (wraps 4 INSERTs)
+4. RLS policies: Enforce onboarding completion
+
+---
+
+## **PHASE 2: WORKER AUTH CORE (Backend)**
+Build JWT issuer + token management
+
+**Files:**
+1. `src/infrastructure/auth/jwt.service.ts` (sign/verify JWTs)
+2. `src/infrastructure/auth/token.service.ts` (manage refresh tokens)
+3. `src/features/auth/auth.routes.ts` (register endpoints)
+4. `src/features/auth/auth.handler.ts`:
+   - `POST /api/auth/google/callback` (OAuth → create account → issue tokens)
+   - `POST /api/auth/refresh` (rotate tokens)
+   - `POST /api/auth/logout` (blacklist refresh token)
+   - `GET /api/auth/session` (get user info)
+
+---
+
+## **PHASE 3: WORKER ONBOARDING (Backend)**
+Build onboarding completion logic
+
+**Files:**
+1. `src/features/onboarding/onboarding.routes.ts`
+2. `src/features/onboarding/onboarding.handler.ts`:
+   - `POST /api/onboarding/complete` (finalize profile + set flag)
+   - `GET /api/onboarding/progress` (optional - resume support)
+
+---
+
+## **PHASE 4: WORKER MIDDLEWARE (Backend)**
+Replace Supabase auth middleware with custom JWT
+
+**Files:**
+1. Update `src/shared/middleware/auth.middleware.ts`:
+   - Remove Supabase JWT validation
+   - Add custom JWT verification
+   - Check `onboarding_completed` flag
+
+---
+
+## **PHASE 5: FRONTEND AUTH MANAGER (Client)**
+Build token storage + auto-refresh logic
+
+**Files:**
+1. `src/core/auth/auth-manager.ts` (singleton - manages tokens)
+2. `src/core/api/http-client.ts` (fetch wrapper with auto-refresh)
+3. `src/features/auth/contexts/AuthProvider.tsx` (React context)
+4. `src/features/auth/hooks/useAuth.ts` (convenience hook)
+
+---
+
+## **PHASE 6: FRONTEND ONBOARDING (Client)**
+Build onboarding UI
+
+**Files:**
+1. `src/features/onboarding/pages/OnboardingPage.tsx` (multi-step form)
+2. `src/features/onboarding/hooks/useCompleteOnboarding.ts`
+3. `src/features/auth/components/ProtectedRoute.tsx` (route guard)
+
+---
+
+## **PHASE 7: FRONTEND OAUTH (Client)**
+Build Google OAuth button + callback handler
+
+**Files:**
+1. `src/features/auth/pages/LoginPage.tsx` (Google button)
+2. `src/features/auth/pages/OAuthCallbackPage.tsx` (handle redirect)
+3. Update router to add `/auth/callback` route
+
+---
+
+## **⚡ SIMPLIFIED BUILD ORDER**
+
+```
+1. DATABASE (1 hour)
+   → Schema + atomic function + RLS policies
+
+2. WORKER BACKEND (3 hours)
+   → JWT service + Auth endpoints + Onboarding endpoints + Middleware
+
+3. FRONTEND CORE (2 hours)
+   → Auth manager + HTTP client + Auth provider
+
+4. FRONTEND UI (2 hours)
+   → Login page + Onboarding flow + Protected routes + OAuth callback
+
+TOTAL: ~8 hours
+```
+
+---
+
+## **🚀 START HERE**
+
+**Begin with Phase 1 (Database).** 
+
+Once I build the database schema, everything else depends on it. Tell me when you're ready and I'll create the migration files.
