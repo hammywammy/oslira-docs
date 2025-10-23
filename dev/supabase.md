@@ -1370,3 +1370,156 @@ cloudflare handles cron jobs
 | account_id | uuid | YES | - |
 | processed_at | timestamp with time zone | YES | now() |
 | payload | jsonb | YES | - |
+
+
+# 📋 **SUPABASE DATABASE CHANGES - COMPLETE LIST**
+
+All changes made during Phase 1 (Database Migrations):
+
+---
+
+## **🆕 NEW TABLES CREATED**
+
+### **1. `refresh_tokens`**
+Complete new table for storing refresh tokens.
+
+**Columns:**
+- `id` (uuid, PRIMARY KEY) - Auto-generated ID
+- `token` (text, UNIQUE, NOT NULL) - 64-character hex token
+- `user_id` (uuid, NOT NULL) - References `users(id)` with CASCADE delete
+- `account_id` (uuid, NOT NULL) - References `accounts(id)` with CASCADE delete
+- `expires_at` (timestamptz, NOT NULL) - Token expiry (7 days from creation)
+- `revoked_at` (timestamptz, NULL) - Timestamp when revoked (NULL if active)
+- `replaced_by_token` (text, NULL) - Token that replaced this one (for rotation audit)
+- `created_at` (timestamptz, DEFAULT now()) - Creation timestamp
+
+**Indexes:**
+- `idx_refresh_tokens_token` - Fast token lookup (WHERE revoked_at IS NULL)
+- `idx_refresh_tokens_user_id` - Find user's tokens (WHERE revoked_at IS NULL)
+- `idx_refresh_tokens_account_id` - Find account's tokens (WHERE revoked_at IS NULL)
+- `idx_refresh_tokens_expires_at` - Cleanup query (WHERE revoked_at IS NULL)
+
+**Constraints:**
+- `token_not_expired` - CHECK (expires_at > created_at)
+- `revoked_has_timestamp` - CHECK (revoked_at consistency with replaced_by_token)
+
+**RLS Policies:**
+- "Users can read own refresh tokens" - Users see only their tokens
+- "Service role can manage all refresh tokens" - Worker has full access
+
+---
+
+## **📝 COLUMNS ADDED TO EXISTING TABLES**
+
+### **2. `users` table**
+
+**Added column:**
+- `onboarding_completed_at` (timestamptz, NULL) - Timestamp when user completed onboarding
+
+**Added constraint:**
+- `onboarding_timestamp_consistency` - CHECK that timestamp is only set when `onboarding_completed = true`
+
+**Added index:**
+- `idx_users_onboarding_completed_at` - For analytics queries (WHERE onboarding_completed_at IS NOT NULL)
+
+**Data backfill:**
+- Set `onboarding_completed_at = created_at` for existing users where `onboarding_completed = true`
+
+**Note:** The `onboarding_completed` boolean column already existed - we did NOT create it.
+
+---
+
+## **🔒 NEW RLS POLICIES ADDED**
+
+### **3. `analyses` table**
+
+**Added policy:**
+- `require_onboarding_for_analyses` (INSERT) - Prevents non-onboarded users from creating analyses
+
+### **4. `leads` table**
+
+**Added policy:**
+- `require_onboarding_for_leads` (INSERT) - Prevents non-onboarded users from creating leads
+
+### **5. `business_profiles` table**
+
+**Added policy:**
+- `require_onboarding_for_business_profiles` (INSERT) - Prevents non-onboarded users from creating profiles (service_role can bypass)
+
+### **6. `credit_ledger` table**
+
+**Added policy:**
+- `require_onboarding_for_credit_purchases` (INSERT) - Allows welcome bonus before onboarding, but requires onboarding for manual purchases
+
+**Also added read policies (if missing):**
+- "Users can read own analyses" (SELECT on analyses)
+- "Users can read own leads" (SELECT on leads)
+- "Users can read own business profiles" (SELECT on business_profiles)
+
+---
+
+## **⚙️ NEW FUNCTIONS CREATED**
+
+### **7. `create_account_atomic()` function**
+
+**Function signature:**
+```sql
+create_account_atomic(
+  p_user_id uuid,
+  p_email text,
+  p_full_name text,
+  p_avatar_url text DEFAULT NULL
+) RETURNS jsonb
+```
+
+**What it does:**
+1. INSERT or UPDATE user in `users` table
+2. Check if user already has account in `account_members`
+3. If new user:
+   - CREATE account in `accounts` table
+   - CREATE membership in `account_members` table (role: 'owner')
+   - INITIALIZE credit balance in `credit_balances` table (25 credits)
+   - LOG credit grant in `credit_ledger` table
+4. RETURN JSON with user_id, account_id, is_new_user, credit_balance, etc.
+
+**Security:**
+- `SECURITY DEFINER` - Runs with elevated privileges (bypasses RLS)
+- Granted to `service_role` and `authenticated` roles
+
+**Idempotent:** Can be called multiple times safely (won't create duplicate accounts)
+
+---
+
+## **📊 SUMMARY TABLE**
+
+| Change Type | Count | Details |
+|-------------|-------|---------|
+| **New Tables** | 1 | `refresh_tokens` |
+| **New Columns** | 1 | `users.onboarding_completed_at` |
+| **New Indexes** | 5 | 4 on refresh_tokens + 1 on users |
+| **New Constraints** | 3 | 2 on refresh_tokens + 1 on users |
+| **New RLS Policies** | 4+ | Onboarding enforcement on 4 tables |
+| **New Functions** | 1 | `create_account_atomic()` |
+| **Data Backfilled** | Yes | Onboarding timestamps for existing users |
+
+---
+
+## **🔍 NO CHANGES MADE TO:**
+
+- ❌ No existing tables dropped
+- ❌ No existing columns dropped
+- ❌ No existing columns renamed
+- ❌ No existing data deleted
+- ❌ No existing foreign keys modified
+- ❌ No existing indexes dropped
+
+**All changes were additive (non-destructive).**
+
+---
+
+## **📝 NOTES**
+
+1. **`onboarding_completed` boolean** - Already existed, we didn't create it
+2. **RLS already enabled** - On analyses, leads, business_profiles tables
+3. **Existing policies** - Left untouched, only added new onboarding policies
+4. **Migration 2 backfill** - Set timestamps for 1 existing user (based on your verification results)
