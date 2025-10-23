@@ -1523,3 +1523,5 @@ create_account_atomic(
 2. **RLS already enabled** - On analyses, leads, business_profiles tables
 3. **Existing policies** - Left untouched, only added new onboarding policies
 4. **Migration 2 backfill** - Set timestamps for 1 existing user (based on your verification results)
+5. 
+SIGNATURE NAME NOW LIVES AT BUSINESS_PROFILES IDENTITY NOT USERS
