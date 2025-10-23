@@ -64,6 +64,7 @@ signature_name: text NOT NULL           -- NEW: Moved from users table
 website: text | null
 
 -- AI-Generated Content
+business_one_liner: text
 business_summary: text | null            -- NEW: AI-generated paragraph (editable by user)
 ideal_customer_profile: jsonb            -- RENAMED from business_context_pack
 operational_metadata: jsonb              -- NEW: Internal app logic data
