@@ -1,206 +1,294 @@
-## PROFILE-LEVEL FIELDS
+# 📊 Instagram Profile Data Schema
 
-These fields describe the main profile, its metadata, its counts, and its external links.
+> Complete field reference for Instagram profile scraping data structure.
 
-Identifiers
+---
 
-id
-Unique identifier for the profile entity.
-Aliases: fbid, ownerId
+&nbsp;
 
-username
-The handle associated with the profile.
+## 🧑‍💼 Profile-Level Fields
 
-fullName
-User’s display name.
-Aliases: full_name
+Core fields describing the main profile entity.
 
-Profile Text & Bio
+&nbsp;
 
-biography
-Text describing the user.
+### Identifiers
 
-External Links
+| Field | Description |
+|:------|:------------|
+| `id` | Unique identifier for the profile entity |
+| `fbid` | Facebook ID associated with the profile |
+| `username` | The handle associated with the profile |
+| `url` | Direct URL to the Instagram profile |
+| `fullName` | User's display name |
 
-externalUrls
-Array of structured external links (title, type, URL metadata).
+&nbsp;
 
-externalUrl
-Primary external link displayed on the profile.
+---
 
-externalUrlShimmed
-Redirect/shimmed tracking URL version.
+&nbsp;
 
-Counts & Stats
+### Profile Text & Bio
 
-followersCount
-Number of followers.
+| Field | Description |
+|:------|:------------|
+| `biography` | Text describing the user |
 
-followsCount
-Number of accounts followed.
+&nbsp;
 
-highlightReelCount
-Number of story highlights.
+---
 
-postsCount
-Count of posts on the profile.
+&nbsp;
 
-igtvVideoCount
-Count of IGTV-format videos.
+### External Links
 
-Account Properties & Flags
+| Field | Description |
+|:------|:------------|
+| `externalUrl` | Primary external link displayed on the profile |
+| `externalUrlShimmed` | Redirect/shimmed tracking URL version |
+| `externalUrls` | Array of structured external links |
 
-private
-Whether the account is private.
-Alias: is_private
+**`externalUrls[]` Object Structure:**
 
-verified
-Whether the account is verified.
-Alias: is_verified
+| Field | Description |
+|:------|:------------|
+| `title` | Display title of the link |
+| `url` | Clean destination URL |
+| `lynx_url` | Instagram's tracking/redirect URL |
+| `link_type` | Type classification (e.g., `external`) |
 
-isBusinessAccount
-Whether the profile is a business account.
+&nbsp;
 
-businessCategoryName
-Category associated with a business profile.
+---
 
-hasChannel
-Whether the user has a broadcast channel.
+&nbsp;
 
-joinedRecently
-Flag indicating whether the account is new.
+### Counts & Stats
 
-Images
+| Field | Description |
+|:------|:------------|
+| `followersCount` | Number of followers |
+| `followsCount` | Number of accounts followed |
+| `postsCount` | Count of posts on the profile |
+| `highlightReelCount` | Number of story highlights |
+| `igtvVideoCount` | Count of IGTV-format videos |
 
-profilePicUrl
-Standard-resolution profile picture.
-Alias: profile_pic_url
+&nbsp;
 
-profilePicUrlHD
-High-definition profile picture.
+---
 
-Source Metadata
+&nbsp;
 
-inputUrl
-URL from which the data was scraped.
+### Account Properties & Flags
 
-## RELATED PROFILES (LEADS / SUGGESTED ACCOUNTS)
+| Field | Description |
+|:------|:------------|
+| `private` | Whether the account is private |
+| `verified` | Whether the account is verified |
+| `isBusinessAccount` | Whether the profile is a business account |
+| `businessCategoryName` | Category associated with a business profile |
+| `hasChannel` | Whether the user has a broadcast channel |
+| `joinedRecently` | Flag indicating whether the account is new |
 
-Each object inside relatedProfiles contains:
+&nbsp;
 
-Identifiers
+---
 
-id
-Unique ID for the related profile.
+&nbsp;
 
-username
-Handle of the related profile.
+### Images
 
-fullName
-Display name.
-Alias: full_name
+| Field | Description |
+|:------|:------------|
+| `profilePicUrl` | Standard-resolution profile picture |
+| `profilePicUrlHD` | High-definition profile picture |
 
-Profile Properties
+&nbsp;
 
-is_verified
-Verification status.
-Alias: verified
+---
 
-is_private
-Privacy status.
-Alias: private
+&nbsp;
 
-Media
+### Source Metadata
 
-profile_pic_url
-URL of the related profile’s picture.
-Alias: profilePicUrl
+| Field | Description |
+|:------|:------------|
+| `inputUrl` | URL from which the data was scraped |
 
-## LATEST POSTS (POST-LEVEL FIELDS)
+&nbsp;
 
-Each object inside latestPosts includes the following fields:
+---
 
-Identifiers
+&nbsp;
 
-id
-Unique ID of the post.
+## 👥 Related Profiles
 
-shortCode
-Short permalink identifier.
+Suggested accounts / potential leads returned in `relatedProfiles[]`.
 
-Content Metadata
+&nbsp;
 
-type
-Type of post (video, image, clip, carousel, etc.).
+| Field | Description |
+|:------|:------------|
+| `id` | Unique ID for the related profile |
+| `username` | Handle of the related profile |
+| `full_name` | Display name |
+| `is_verified` | Verification status |
+| `is_private` | Privacy status |
+| `profile_pic_url` | URL of the related profile's picture |
 
-caption
-Text caption of the post.
+&nbsp;
 
-hashtags
-List of hashtags extracted from caption.
+---
 
-mentions
-List of mentioned users.
+&nbsp;
 
-URLs & Media
+## 📸 Latest Posts
 
-url
-Public URL linking to the post.
+Each object inside `latestPosts[]` contains the following fields.
 
-displayUrl
-Thumbnail or displayed media URL.
+&nbsp;
 
-videoUrl
-Direct URL to video file (if video content).
+### Identifiers
 
-images
-Array of image objects or variants.
+| Field | Description |
+|:------|:------------|
+| `id` | Unique ID of the post |
+| `shortCode` | Short permalink identifier |
+| `url` | Public URL linking to the post |
+| `ownerId` | ID of the content owner |
+| `ownerUsername` | Username of content owner |
 
-alt
-Accessibility alt text for the media.
+&nbsp;
 
-Dimensions
+---
 
-dimensionsHeight
-Height of media in pixels.
+&nbsp;
 
-dimensionsWidth
-Width of media in pixels.
+### Content Metadata
 
-Engagement Stats
+| Field | Description |
+|:------|:------------|
+| `type` | Type of post (`Video`, `Image`, `Sidecar`) |
+| `productType` | Post classification (`clips`, `feed`, etc.) |
+| `caption` | Text caption of the post |
+| `hashtags` | List of hashtags extracted from caption |
+| `mentions` | List of mentioned users |
+| `alt` | Accessibility alt text for the media |
 
-likesCount
-Number of likes.
+&nbsp;
 
-commentsCount
-Number of comments.
+---
 
-videoViewCount
-Number of video views.
+&nbsp;
 
-Timing
+### Media URLs & Assets
 
-timestamp
-Date/time when the post was created.
+| Field | Description |
+|:------|:------------|
+| `displayUrl` | Thumbnail or displayed media URL |
+| `videoUrl` | Direct URL to video file (if video content) |
+| `images` | Array of image URLs (for carousels) |
 
-Ownership
+&nbsp;
 
-ownerUsername
-Username of content owner.
+---
 
-ownerId
-ID of the content owner.
-(Merged under id alias group but kept for readability at post-level)
+&nbsp;
 
-Structural
+### Dimensions
 
-childPosts
-Carousel or nested media items.
+| Field | Description |
+|:------|:------------|
+| `dimensionsHeight` | Height of media in pixels |
+| `dimensionsWidth` | Width of media in pixels |
 
-Additional Metadata
+&nbsp;
 
-productType
-Post classification (reels, clips, feed, etc.).
+---
 
-isCommentsDisabled
-Whether commenting is turned off.
+&nbsp;
+
+### Engagement Stats
+
+| Field | Description |
+|:------|:------------|
+| `likesCount` | Number of likes |
+| `commentsCount` | Number of comments |
+| `videoViewCount` | Number of video views |
+
+&nbsp;
+
+---
+
+&nbsp;
+
+### Timing
+
+| Field | Description |
+|:------|:------------|
+| `timestamp` | ISO 8601 date/time when the post was created |
+
+&nbsp;
+
+---
+
+&nbsp;
+
+### Location
+
+| Field | Description |
+|:------|:------------|
+| `locationName` | Human-readable location name |
+| `locationId` | Instagram's location ID |
+
+&nbsp;
+
+---
+
+&nbsp;
+
+### Moderation
+
+| Field | Description |
+|:------|:------------|
+| `isCommentsDisabled` | Whether commenting is turned off |
+
+&nbsp;
+
+---
+
+&nbsp;
+
+### Tagged Users
+
+Array `taggedUsers[]` containing:
+
+| Field | Description |
+|:------|:------------|
+| `id` | User ID of the tagged person |
+| `username` | Username of the tagged person |
+| `full_name` | Display name of the tagged person |
+| `is_verified` | Verification status |
+| `profile_pic_url` | Profile picture URL |
+
+&nbsp;
+
+---
+
+&nbsp;
+
+### Nested / Carousel Posts
+
+For `Sidecar` (carousel) posts, `childPosts[]` contains nested post objects with the same structure as parent posts.
+
+&nbsp;
+
+---
+
+&nbsp;
+
+## 📺 IGTV Videos
+
+Array `latestIgtvVideos[]` — uses the same field structure as `latestPosts[]`.
+
+&nbsp;
